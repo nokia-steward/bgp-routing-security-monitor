@@ -5,13 +5,13 @@ routers and a production RPKI validator.
 
 ## Architecture
 
-```text
-Edge Router 1 ──BMP──┐
-                     ├──▶ RAVEN ──/metrics──▶ Prometheus ──▶ Grafana
-Edge Router 2 ──BMP──┘      │
-                            │ RTR
-                            ▼
-                       Routinator
+```mermaid
+flowchart LR
+    EdgeRouter1["Edge Router 1"] -->|BMP| RAVEN["RAVEN"]
+    EdgeRouter2["Edge Router 2"] -->|BMP| RAVEN
+    RAVEN -->|"/metrics"| Prometheus["Prometheus"]
+    Prometheus --> Grafana["Grafana"]
+    RAVEN -->|RTR| Routinator["Routinator"]
 ```
 
 ## Step 1 — Install RAVEN

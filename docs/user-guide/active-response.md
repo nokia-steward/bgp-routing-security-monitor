@@ -417,16 +417,12 @@ The webhook payload is compatible with:
 
 The Flowspec action automates the full mitigation lifecycle:
 
-```text
-detect origin-invalid route
-↓
-generate Flowspec drop rule (dry-run)
-↓
-raven flowspec list     ← review
-↓
-raven flowspec toggle   ← inject live into GoBGP
-↓
-auto-expire after TTL   ← or toggle again to withdraw early
+```mermaid
+flowchart TD
+    Detect["detect origin-invalid route"] --> Generate["generate Flowspec drop rule (dry-run)"]
+    Generate --> List["raven flowspec list ← review"]
+    List --> Toggle["raven flowspec toggle ← inject live into GoBGP"]
+    Toggle --> Expire["auto-expire after TTL ← or toggle again to withdraw early"]
 ```
 
 ### Prerequisites

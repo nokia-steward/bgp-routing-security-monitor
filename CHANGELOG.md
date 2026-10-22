@@ -120,6 +120,7 @@ All notable changes to RAVEN are recorded here.
   Invalid, the failing hop as `hop(C→P)`: AS C's ASPA does not list the
   next AS P. The protobuf `RouteEntry` gains `aspa_failing_hop` (field 14).
 - The documentation site now has a light and dark theme toggle. The first visit follows the operating system preference.
+- The ASCII topology and architecture diagrams are now Mermaid diagrams.
 
 ### Fixed
 - The default Loc-RIB instance (zero distinguisher) is named `global` in the peer data, as RFC 9069 §5.2.1 requires, whether or not its Peer Up carries a VRF/Table Name TLV and whether or not a Peer Up arrives at all; `/api/v1/peers`, `raven peers` and the BMP registration log showed no table name.

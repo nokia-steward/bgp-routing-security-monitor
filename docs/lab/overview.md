@@ -16,20 +16,15 @@ security stack on your laptop. This is the same lab used for conference demos.
 The lab topology consists of four FRR routers and RAVEN connected via
 Containerlab:
 
-```text
-                Internet (AS64496)
-                       │ eBGP
-                       ▼
-        Upstream (AS65000) ─── eBGP ─── Attacker (AS65099)
-                       │ eBGP                           │ eBGP
-                       ▼                                │
-                Edge (AS65001) ──────────────────────────┘
-                       │ BMP (pre-policy)
-                       ▼
-                     RAVEN ◄── RTR ── Routinator
-                       │
-                       ▼
-              Prometheus + Grafana
+```mermaid
+flowchart TD
+    Internet["Internet (AS64496)"] -->|eBGP| Upstream["Upstream (AS65000)"]
+    Upstream -->|eBGP| Attacker["Attacker (AS65099)"]
+    Upstream -->|eBGP| Edge["Edge (AS65001)"]
+    Attacker -->|eBGP| Edge
+    Edge -->|"BMP (pre-policy)"| RAVEN["RAVEN"]
+    Routinator["Routinator"] -->|RTR| RAVEN
+    RAVEN --> Prometheus["Prometheus + Grafana"]
 ```
 
 | Node | ASN | Role |

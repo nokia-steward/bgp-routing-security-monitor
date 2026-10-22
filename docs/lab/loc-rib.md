@@ -12,13 +12,14 @@ correctly.
 
 ## Topology
 
-```text
-  ext1 AS64510 ──┐
-                 ├── rr1 AS65000 ──── rr2 AS65000
-  ext2 AS64520 ──┘   router-id 10.0.12.1
-                     BMP: loc-rib      BMP: adj-rib-in-pre
-                          │                 │
-                          └──── RAVEN ──────┘ ◄── StayRTR (vrps.json)
+```mermaid
+flowchart LR
+    ext1["ext1 AS64510"] --> rr1["rr1 AS65000"]
+    ext2["ext2 AS64520"] --> rr1
+    rr1 -->|"iBGP, router-id 10.0.12.1"| rr2["rr2 AS65000"]
+    rr1 -->|"BMP: loc-rib"| RAVEN["RAVEN"]
+    rr2 -->|"BMP: adj-rib-in-pre"| RAVEN
+    StayRTR["StayRTR (vrps.json)"] -->|RTR| RAVEN
 ```
 
 | Node | Image | Role |

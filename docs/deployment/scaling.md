@@ -65,10 +65,13 @@ routes. See [Loc-RIB Monitoring](../user-guide/loc-rib.md).
 
 The recommended pattern for most networks is one RAVEN instance receiving BMP from all your routers:
 
-```text
-Router 1 ──BMP──┐
-Router 2 ──BMP──┼──▶ RAVEN ──▶ Prometheus ──▶ Grafana
-Router 3 ──BMP──┘
+```mermaid
+flowchart LR
+    Router1["Router 1"] -->|BMP| RAVEN["RAVEN"]
+    Router2["Router 2"] -->|BMP| RAVEN
+    Router3["Router 3"] -->|BMP| RAVEN
+    RAVEN --> Prometheus["Prometheus"]
+    Prometheus --> Grafana["Grafana"]
 ```
 
 RAVEN handles concurrent BMP sessions with one goroutine per session.
@@ -98,9 +101,12 @@ your monitoring SLA, not routing resilience requirements.
 
 **Simple HA pattern: two independent instances**
 
-```text
-Router 1 ──BMP──▶ RAVEN-1 ──▶ Prometheus-1
-Router 2 ──BMP──▶ RAVEN-2 ──▶ Prometheus-2
+```mermaid
+flowchart LR
+    Router1["Router 1"] -->|BMP| RAVEN1["RAVEN-1"]
+    RAVEN1 --> Prometheus1["Prometheus-1"]
+    Router2["Router 2"] -->|BMP| RAVEN2["RAVEN-2"]
+    RAVEN2 --> Prometheus2["Prometheus-2"]
 ```
 
 Run two RAVEN instances receiving from different sets of routers. Aggregate
@@ -109,10 +115,12 @@ you redundancy without coordination complexity.
 
 **Full redundancy: all routers to both instances**
 
-```text
-               ┌──▶ RAVEN-1 ──▶ Prometheus
-Router 1 ──BMP─┤
-               └──▶ RAVEN-2 ──▶ Prometheus
+```mermaid
+flowchart LR
+    Router1["Router 1"] -->|BMP| RAVEN1["RAVEN-1"]
+    Router1 -->|BMP| RAVEN2["RAVEN-2"]
+    RAVEN1 --> Prometheus["Prometheus"]
+    RAVEN2 --> Prometheus
 ```
 
 Both instances receive the full route table independently. Prometheus
