@@ -234,9 +234,10 @@ func (d *Detector) ObserveError(cache string, code *uint16, ts time.Time) *Anoma
 }
 
 // ObserveSync evaluates one sync's metrics against the rolling windows and
-// updates them. It returns a non-nil event on a hard trip (any metric crossing
-// the hard threshold) or a correlated trip (at least CorrelatedCount metrics
-// crossing the soft threshold), otherwise nil.
+// updates them. It returns a non-nil event on a hard trip (any metric whose z
+// reaches the hard threshold) or a correlated trip (at least CorrelatedCount
+// metrics whose z reaches the soft threshold), otherwise nil. Thresholds are
+// one-sided: only values above the window median can trip.
 //
 // Evaluation uses the window contents as they stand before this sync's values
 // are inserted. On a hard trip, the confirmed-anomalous metrics are excluded
@@ -256,7 +257,7 @@ func (d *Detector) ObserveSync(cache string, ts time.Time, metrics map[string]fl
 	softZ := make(map[string]float64)
 	hardSet := make(map[string]bool)
 	hardTrigger := ""
-	hardAbsZ := -1.0
+	hardZ := -1.0
 
 	var present []string
 	for _, name := range trackedMetrics {
@@ -286,18 +287,21 @@ func (d *Detector) ObserveSync(cache string, ts time.Time, metrics map[string]fl
 		if !ok {
 			continue // MAD == 0: insufficient variance to evaluate.
 		}
+		// Upper tail only, for every tracked metric: the failures worth
+		// flagging (a stalled validator, a slow repository, a burst of
+		// churn) all push values up. A shorter interval, a faster sync or a
+		// quieter delta is never anomalous, however large its negative z.
 		soft, hard := d.cfg.thresholdsFor(name)
-		absZ := math.Abs(z)
-		if absZ >= soft {
+		if z >= soft {
 			softZ[name] = z
 		}
-		if absZ >= hard {
+		if z >= hard {
 			hardSet[name] = true
-			// Largest |z| wins the Trigger slot; ties resolve to the first
+			// Largest z wins the Trigger slot; ties resolve to the first
 			// metric in canonical order since we only replace on strictly
-			// greater |z|.
-			if absZ > hardAbsZ {
-				hardAbsZ = absZ
+			// greater z.
+			if z > hardZ {
+				hardZ = z
 				hardTrigger = name
 			}
 		}
