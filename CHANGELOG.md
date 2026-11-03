@@ -123,6 +123,11 @@ All notable changes to RAVEN are recorded here.
 - The ASCII topology and architecture diagrams are now Mermaid diagrams.
 
 ### Fixed
+- The pprof CPU profile handler no longer shares its ResponseWriter with
+  runtime/pprof's writer goroutine (an intermittent data race under -race).
+  The profile is buffered and written after it stops; a request while another
+  profile is running gets 500; shutdown ends an in-flight profile and delivers
+  it instead of dropping the connection.
 - An out-of-range RTR End of Data interval is clamped to the nearest bound
   of its RFC 8210 §6 range (Refresh 1–86400 s, Retry 1–7200 s, Expire
   600–172800 s) instead of replaced by the default. A Refresh Interval of 0

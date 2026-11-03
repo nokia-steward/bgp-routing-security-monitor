@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"html"
@@ -31,6 +32,12 @@ const (
 
 	pprofDefaultCPUSeconds   = 30
 	pprofDefaultTraceSeconds = 1
+
+	// pprofShutdownGrace is how long shutdown waits for in-flight profiles
+	// and traces to be cut short and delivered before it drops their
+	// connections. Stopping the CPU profiler takes up to one 100ms sampling
+	// period, so this is ample.
+	pprofShutdownGrace = time.Second
 )
 
 // startPprof opens the debug.pprof listener and serves runtime profiles on it
@@ -59,18 +66,32 @@ func (s *Server) startPprof(ctx context.Context, wg *sync.WaitGroup) net.Addr {
 			"addr", bound.String())
 	}
 
-	srv := &http.Server{Handler: newPprofMux(), ReadHeaderTimeout: pprofReadHeaderTimeout}
+	srv := &http.Server{Handler: newPprofMux(ctx.Done()), ReadHeaderTimeout: pprofReadHeaderTimeout}
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		stopped := make(chan struct{})
 		go func() {
+			defer close(stopped)
 			<-ctx.Done()
-			srv.Close()
+			// Shutdown does not cancel request contexts, so the profile and
+			// trace handlers also watch ctx: they end early, deliver what they
+			// have, and let Shutdown finish. Close is the backstop for a
+			// client that will not read its response.
+			sctx, cancel := context.WithTimeout(context.Background(), pprofShutdownGrace)
+			defer cancel()
+			if err := srv.Shutdown(sctx); err != nil {
+				srv.Close()
+			}
 		}()
 		if err := srv.Serve(ln); err != http.ErrServerClosed {
 			s.log.Error("pprof server error", "error", err)
+			return
 		}
+		// Serve returns as soon as Shutdown starts; stay registered on wg
+		// until the in-flight handlers have finished too.
+		<-stopped
 	}()
 
 	s.log.Info("pprof endpoint started", "addr", bound.String(), "path", "/debug/pprof/")
@@ -84,12 +105,18 @@ func isLoopbackAddr(a net.Addr) bool {
 	return ok && tcp.IP.IsLoopback()
 }
 
-// newPprofMux returns a fresh mux serving the /debug/pprof/ endpoints.
-func newPprofMux() *http.ServeMux {
+// newPprofMux returns a fresh mux serving the /debug/pprof/ endpoints. A CPU
+// profile or trace in progress ends early, with what it has so far, when stop
+// is closed.
+func newPprofMux(stop <-chan struct{}) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/debug/pprof/", pprofIndex)
-	mux.HandleFunc("/debug/pprof/profile", pprofCPUProfile)
-	mux.HandleFunc("/debug/pprof/trace", pprofTrace)
+	mux.HandleFunc("/debug/pprof/profile", func(w http.ResponseWriter, r *http.Request) {
+		pprofCPUProfile(w, r, stop)
+	})
+	mux.HandleFunc("/debug/pprof/trace", func(w http.ResponseWriter, r *http.Request) {
+		pprofTrace(w, r, stop)
+	})
 	return mux
 }
 
@@ -149,25 +176,41 @@ func pprofNamed(w http.ResponseWriter, r *http.Request, name string) {
 }
 
 // pprofCPUProfile serves a CPU profile covering the next seconds= seconds.
-func pprofCPUProfile(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", `attachment; filename="profile"`)
-	if err := pprof.StartCPUProfile(w); err != nil {
+//
+// The profile is collected into a buffer, not straight into w: StartCPUProfile
+// hands its writer to a runtime goroutine that writes until StopCPUProfile
+// returns, and an http.ResponseWriter must not be used from two goroutines.
+// With the buffer, only this goroutine ever touches w.
+func pprofCPUProfile(w http.ResponseWriter, r *http.Request, stop <-chan struct{}) {
+	var buf bytes.Buffer
+	if err := pprof.StartCPUProfile(&buf); err != nil {
+		// Typically another profile is already running; nothing has been
+		// written yet, so the caller gets a real error status.
 		pprofError(w, http.StatusInternalServerError, "could not enable CPU profiling: "+err.Error())
 		return
 	}
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", `attachment; filename="profile"`)
 	// Send the 200 now: the profile itself only arrives at the end, and this
 	// tells the caller that profiling is actually running.
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
-	pprofSleep(r, pprofSeconds(r, pprofDefaultCPUSeconds))
+	pprofSleep(r, pprofSeconds(r, pprofDefaultCPUSeconds), stop)
+	// StopCPUProfile returns only once the profile writer has finished with
+	// buf, so reading it afterwards is safe.
 	pprof.StopCPUProfile()
+	// A write error means the client went away; nobody is left to tell.
+	_, _ = w.Write(buf.Bytes())
 }
 
 // pprofTrace serves an execution trace covering the next seconds= seconds.
-func pprofTrace(w http.ResponseWriter, r *http.Request) {
+//
+// Unlike the CPU profile, the trace streams into w directly. That is safe
+// because this handler does not touch w between trace.Start and trace.Stop,
+// and Stop returns only once the trace writer is done with it.
+func pprofTrace(w http.ResponseWriter, r *http.Request, stop <-chan struct{}) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", `attachment; filename="trace"`)
@@ -175,7 +218,7 @@ func pprofTrace(w http.ResponseWriter, r *http.Request) {
 		pprofError(w, http.StatusInternalServerError, "could not enable tracing: "+err.Error())
 		return
 	}
-	pprofSleep(r, pprofSeconds(r, pprofDefaultTraceSeconds))
+	pprofSleep(r, pprofSeconds(r, pprofDefaultTraceSeconds), stop)
 	trace.Stop()
 }
 
@@ -189,15 +232,16 @@ func pprofSeconds(r *http.Request, def float64) time.Duration {
 	return time.Duration(sec * float64(time.Second))
 }
 
-// pprofSleep waits for d, or until the request is abandoned. The server
-// closing at shutdown cancels the request context too, so a long CPU profile
-// ends with the daemon instead of leaving profiling switched on.
-func pprofSleep(r *http.Request, d time.Duration) {
+// pprofSleep waits for d, until the request is abandoned, or until stop is
+// closed at shutdown, so a long CPU profile ends with the daemon instead of
+// leaving profiling switched on.
+func pprofSleep(r *http.Request, d time.Duration, stop <-chan struct{}) {
 	t := time.NewTimer(d)
 	defer t.Stop()
 	select {
 	case <-t.C:
 	case <-r.Context().Done():
+	case <-stop:
 	}
 }
 
