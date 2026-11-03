@@ -1069,7 +1069,9 @@ type endOfData struct {
 
 // parseEndOfData parses an End of Data PDU payload. Version 0 carries only
 // the serial; versions 1 and 2 add the Refresh, Retry and Expire Intervals
-// (RFC 8210 §5.8). Absent or out-of-range intervals take the RFC defaults.
+// (RFC 8210 §5.8). Absent intervals (version 0) take the RFC defaults; an
+// out-of-range interval is clamped to the nearest bound of its §6 range, so
+// a Refresh Interval of 0 ("refresh now") becomes 1 second, not the default.
 func (c *Client) parseEndOfData(version uint8, data []byte) (endOfData, error) {
 	if len(data) < 4 {
 		return endOfData{}, fmt.Errorf("end-of-data PDU too short: %d", len(data))
@@ -1083,17 +1085,17 @@ func (c *Client) parseEndOfData(version uint8, data []byte) (endOfData, error) {
 	if version == 0 || len(data) < 16 {
 		return eod, nil
 	}
-	field := func(name string, v uint32, valid [2]uint32, def uint32) uint32 {
-		if v < valid[0] || v > valid[1] {
-			c.log.Warn("cache sent an out-of-range End of Data interval; using the default",
-				"interval", name, "value", v, "default", def)
-			return def
+	field := func(name string, v uint32, valid [2]uint32) uint32 {
+		clamped := min(max(v, valid[0]), valid[1])
+		if clamped != v {
+			c.log.Warn("cache sent an out-of-range End of Data interval; clamped",
+				"interval", name, "value", v, "clamped", clamped)
 		}
-		return v
+		return clamped
 	}
-	eod.refresh = field("refresh", binary.BigEndian.Uint32(data[4:8]), refreshRange, defaultRefresh)
-	eod.retry = field("retry", binary.BigEndian.Uint32(data[8:12]), retryRange, defaultRetry)
-	eod.expire = field("expire", binary.BigEndian.Uint32(data[12:16]), expireRange, defaultExpire)
+	eod.refresh = field("refresh", binary.BigEndian.Uint32(data[4:8]), refreshRange)
+	eod.retry = field("retry", binary.BigEndian.Uint32(data[8:12]), retryRange)
+	eod.expire = field("expire", binary.BigEndian.Uint32(data[12:16]), expireRange)
 	return eod, nil
 }
 
