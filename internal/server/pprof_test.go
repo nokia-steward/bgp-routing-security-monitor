@@ -2,15 +2,18 @@ package server
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"runtime/pprof"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -42,6 +45,23 @@ func newPprofTestServer(listen string) (*Server, *syncBuffer) {
 	logs := &syncBuffer{}
 	cfg := &config.Config{Debug: config.DebugConfig{Pprof: config.PprofConfig{Listen: listen}}}
 	return &Server{cfg: cfg, log: slog.New(slog.NewTextHandler(logs, nil))}, logs
+}
+
+// checkCPUProfile fails the test unless body is a complete gzipped CPU
+// profile, as go tool pprof reads it.
+func checkCPUProfile(t *testing.T, body []byte) {
+	t.Helper()
+	zr, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("CPU profile is not gzipped (%d bytes): %v", len(body), err)
+	}
+	raw, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("CPU profile is truncated (%d bytes): %v", len(body), err)
+	}
+	if !bytes.Contains(raw, []byte("nanoseconds")) {
+		t.Fatalf("CPU profile (%d bytes decompressed) carries no cpu/nanoseconds sample type", len(raw))
+	}
 }
 
 // waitGroupDone fails the test if wg does not drain within d.
@@ -143,7 +163,8 @@ func TestPprofServesProfilesWhenConfigured(t *testing.T) {
 }
 
 // A CPU profile holds its request open for seconds= seconds. Shutdown must
-// neither wait for it nor leave CPU profiling switched on behind it.
+// neither wait for it nor leave CPU profiling switched on behind it, and the
+// caller still gets the (short) profile collected so far.
 func TestPprofShutdownEndsInFlightCPUProfile(t *testing.T) {
 	s, logs := newPprofTestServer("127.0.0.1:0")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -170,7 +191,11 @@ func TestPprofShutdownEndsInFlightCPUProfile(t *testing.T) {
 	start := time.Now()
 	cancel()
 	waitGroupDone(t, &wg, 2*time.Second)
-	_, _ = io.Copy(io.Discard, resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading profile cut short by shutdown: %v (%d bytes)", err, len(body))
+	}
+	checkCPUProfile(t, body)
 
 	// Once the handler has noticed, the process-wide CPU profiler is free.
 	deadline := time.Now().Add(2 * time.Second)
@@ -181,6 +206,90 @@ func TestPprofShutdownEndsInFlightCPUProfile(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	pprof.StopCPUProfile()
+}
+
+// A profile that runs to its seconds= end arrives whole. Only one CPU profile
+// can run per process, so a second request while one is running must get an
+// error status rather than a 200 with an empty body.
+func TestPprofCPUProfile(t *testing.T) {
+	s, logs := newPprofTestServer("127.0.0.1:0")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var wg sync.WaitGroup
+	addr := s.startPprof(ctx, &wg)
+	if addr == nil {
+		t.Fatalf("startPprof returned nil; logs:\n%s", logs)
+	}
+	url := "http://" + addr.String() + "/debug/pprof/profile?seconds=0.2"
+
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("GET profile: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("reading profile: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET profile = %d, want 200: %s", resp.StatusCode, body)
+	}
+	checkCPUProfile(t, body)
+
+	if err := pprof.StartCPUProfile(io.Discard); err != nil {
+		t.Fatalf("CPU profiling still on after the profile was served: %v", err)
+	}
+	resp, err = http.Get(url)
+	pprof.StopCPUProfile()
+	if err != nil {
+		t.Fatalf("GET profile while one is running: %v", err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("GET profile while one is running = %d, want 500: %s", resp.StatusCode, body)
+	}
+	if cd := resp.Header.Get("Content-Disposition"); cd != "" {
+		t.Fatalf("error response still offers a download: Content-Disposition %q", cd)
+	}
+
+	cancel()
+	waitGroupDone(t, &wg, 2*time.Second)
+}
+
+// profilerOwnedWriter is a ResponseWriter that records any Write made from the
+// runtime's CPU profile writer goroutine.
+type profilerOwnedWriter struct {
+	*httptest.ResponseRecorder
+	fromProfiler atomic.Bool
+}
+
+func (w *profilerOwnedWriter) Write(p []byte) (int, error) {
+	buf := make([]byte, 64<<10)
+	if strings.Contains(string(buf[:runtime.Stack(buf, false)]), "runtime/pprof.profileWriter") {
+		w.fromProfiler.Store(true)
+	}
+	return w.ResponseRecorder.Write(p)
+}
+
+// The handler flushes the response while the CPU profile runs, and an
+// http.ResponseWriter is not safe for concurrent use, so the profiler's
+// writer goroutine must never be handed w itself. The race detector only
+// sees that when the two goroutines happen to overlap; this sees it every
+// time.
+func TestPprofCPUProfileDoesNotShareResponseWriter(t *testing.T) {
+	w := &profilerOwnedWriter{ResponseRecorder: httptest.NewRecorder()}
+	r := httptest.NewRequest(http.MethodGet, "/debug/pprof/profile?seconds=0.2", nil)
+	pprofCPUProfile(w, r, nil)
+
+	if w.fromProfiler.Load() {
+		t.Fatal("the CPU profile writer goroutine wrote to the http.ResponseWriter directly")
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body)
+	}
+	checkCPUProfile(t, w.Body.Bytes())
 }
 
 func TestPprofWarnsWhenExposedBeyondLoopback(t *testing.T) {
