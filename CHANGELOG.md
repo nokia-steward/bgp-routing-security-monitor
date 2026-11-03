@@ -123,6 +123,14 @@ All notable changes to RAVEN are recorded here.
 - The ASCII topology and architecture diagrams are now Mermaid diagrams.
 
 ### Fixed
+- The RTR anomaly detector flags only values above a metric's baseline. It
+  used to trip on |z|, so after a baseline seeded at a 15-minute cadence
+  every 5-15s sync was a high-severity `interval_since_ns` anomaly (z ≈
+  -42). Shorter intervals and faster syncs are no longer anomalies, and
+  neither are unusually small announced or withdrawn counts; long intervals,
+  slow syncs and bursts of changes trip at the same thresholds as before.
+  Low values now enter the rolling windows (live and when seeding) instead
+  of being held out as hard-trip anomalies.
 - The pprof CPU profile handler no longer shares its ResponseWriter with
   runtime/pprof's writer goroutine (an intermittent data race under -race).
   The profile is buffered and written after it stops; a request while another
