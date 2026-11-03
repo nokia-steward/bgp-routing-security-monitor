@@ -123,6 +123,14 @@ All notable changes to RAVEN are recorded here.
 - The ASCII topology and architecture diagrams are now Mermaid diagrams.
 
 ### Fixed
+- An out-of-range RTR End of Data interval is clamped to the nearest bound
+  of its RFC 8210 §6 range (Refresh 1–86400 s, Retry 1–7200 s, Expire
+  600–172800 s) instead of replaced by the default. A Refresh Interval of 0
+  used to become 3600, so a cache with a static serial and no Serial Notify
+  went unpolled for an hour; it now polls after 1 s. The WARN reports the
+  received and clamped values (`interval=refresh value=0 clamped=1`). The
+  defaults (3600/600/7200) still apply before the first End of Data and for
+  RTR version 0, which sends no intervals.
 - The default Loc-RIB instance (zero distinguisher) is named `global` in the peer data, as RFC 9069 §5.2.1 requires, whether or not its Peer Up carries a VRF/Table Name TLV and whether or not a Peer Up arrives at all; `/api/v1/peers`, `raven peers` and the BMP registration log showed no table name.
 - ASPA is not verified without ASPA data. Until an RTR cache syncs at
   protocol version 2 (the first with ASPA), every route's ASPA is Unknown
