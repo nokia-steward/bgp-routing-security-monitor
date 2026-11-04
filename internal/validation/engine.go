@@ -278,6 +278,11 @@ type Revalidation struct {
 
 	ASPAScanned  int           // routes the ASPA scan examined
 	ASPAScanTime time.Duration // time spent in the ASPA scan
+
+	// OnChange, if set, is called with each route the pass replaced and its
+	// replacement, on the goroutine running Step, after the table holds the
+	// replacement. It must not block: Step runs on the table's single writer.
+	OnChange func(old, updated *types.Route)
 }
 
 // NewRevalidation starts a full revalidation pass over the table.
@@ -397,6 +402,9 @@ func (rv *Revalidation) revalidate(r *types.Route) {
 	}
 	if rv.e.table.Replace(r, &updated) {
 		rv.Changed++
+		if rv.OnChange != nil {
+			rv.OnChange(r, &updated)
+		}
 	} else {
 		rv.Skipped++
 	}

@@ -671,7 +671,23 @@ func (s *Server) startRevalidation() {
 	}
 	s.revalidateStart = time.Now()
 	s.revalidation = s.engine.NewDeltaRevalidation(d)
+	s.revalidation.OnChange = s.notifyRevalidated
 	s.revalidating.Store(true)
+}
+
+// notifyRevalidated tells watch subscribers about a route an RTR-driven
+// revalidation pass replaced, as ingest does for a BMP route, if its posture,
+// ROV state or ASPA state changed. A pass also replaces a route whose
+// results changed only in detail (another matching VRP, a new reason); that
+// is not a change a watcher is shown. NotifyRoute never blocks: a watcher
+// whose buffer is full misses the event, so a pass that changes many routes
+// cannot hold up ingestLoop.
+func (s *Server) notifyRevalidated(old, updated *types.Route) {
+	if old.SecurityPosture == updated.SecurityPosture &&
+		old.ROV.State == updated.ROV.State && old.ASPA.State == updated.ASPA.State {
+		return
+	}
+	s.apiSrv.NotifyRoute(updated)
 }
 
 func (s *Server) backgroundPending() bool {

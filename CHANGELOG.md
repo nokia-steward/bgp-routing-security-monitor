@@ -123,6 +123,12 @@ All notable changes to RAVEN are recorded here.
 - The ASCII topology and architecture diagrams are now Mermaid diagrams.
 
 ### Fixed
+- `raven watch` shows routes whose posture, ROV state or ASPA state an RTR
+  update changes, not only BMP-driven changes: a VRP edit that makes a route
+  ROV Invalid is printed like a hijack received over BMP. A revalidation
+  that changes only a route's details (another matching VRP, a reason) is
+  not shown. As for BMP routes, a watcher that falls 100 events behind
+  misses events rather than holding up ingest.
 - The RTR anomaly detector flags only values above a metric's baseline. It
   used to trip on |z|, so after a baseline seeded at a 15-minute cadence
   every 5-15s sync was a high-severity `interval_since_ns` anomaly (z ≈
