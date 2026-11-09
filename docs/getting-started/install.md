@@ -58,6 +58,8 @@ go build -o raven ./cmd/raven
 sudo mv raven /usr/local/bin/
 ```
 
+The `go build` command above works on any platform Go supports. The Makefile (`make check`, release builds) needs GNU make; on FreeBSD, install it with `pkg install gmake` and run `gmake` in place of `make`.
+
 ## Docker
 
 Prebuilt images will be published from release tags. Until then, you build the image from a checkout.
