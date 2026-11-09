@@ -1,0 +1,71 @@
+#!/bin/sh
+#
+# PROVIDE: raven_rtr
+# REQUIRE: LOGIN NETWORKING
+# KEYWORD: shutdown
+#
+# rc.d script for the RTR monitor of RAVEN (raven rtr monitor): an independent RTR client
+# that follows a cache as a router would, writes session and sync telemetry as NDJSON and runs an adaptive anomaly detector on the
+# stream of syncs. Install as /usr/local/etc/rc.d/raven_rtr and add raven_rtr_enable="YES" to /etc/rc.conf.
+#
+# One monitor follows one cache. To follow several, name the profiles and set the cache of each; every other variable can be set
+# for a profile as well (raven_rtr_<profile>_<name>), and each profile gets its own directory under raven_rtr_dir, its own log,
+# pid file and metrics port:
+#
+#   raven_rtr_profiles="routinator fort level66 cloudflare"
+#   raven_rtr_routinator_cache="192.0.2.1:3323"
+#   raven_rtr_routinator_prometheus="127.0.0.1:9595"
+#   raven_rtr_fort_cache="192.0.2.1:3324"
+#   raven_rtr_fort_prometheus="127.0.0.1:9598"
+#   raven_rtr_level66_cache="rpki.level66.services:3323"
+#   raven_rtr_level66_prometheus="127.0.0.1:9596"
+#   raven_rtr_cloudflare_cache="rtr.rpki.cloudflare.com:8282"
+#   raven_rtr_cloudflare_prometheus="127.0.0.1:9597"
+#
+# Without profiles a single monitor runs with the plain variables and writes straight into raven_rtr_dir. daemon(8) supervises and
+# restarts the process; chroot(8) with -u only drops privileges to the service user (the root directory stays /). The variable is
+# not called raven_rtr_user because rc.subr would then run daemon itself as that user.
+. /etc/rc.subr
+name=raven_rtr
+rcvar=raven_rtr_enable
+load_rc_config $name
+: ${raven_rtr_enable:=NO}
+: ${raven_rtr_runas:=raven}
+: ${raven_rtr_cache:=127.0.0.1:3323}
+: ${raven_rtr_transport:=tcp}
+: ${raven_rtr_dir:=/var/db/raven}
+: ${raven_rtr_prometheus:=127.0.0.1:9595}
+: ${raven_rtr_profiles:=}
+
+if [ -n "$2" ]; then
+  profile="$2"
+  if [ -z "${raven_rtr_profiles}" ]; then
+    echo "$0: no profiles are configured" >&2
+    exit 1
+  fi
+  for var in enable cache transport prometheus; do
+    eval "raven_rtr_${var}=\${raven_rtr_${profile}_${var}:-\${raven_rtr_${var}}}"
+  done
+  eval "raven_rtr_dir=\${raven_rtr_${profile}_dir:-${raven_rtr_dir}/${profile}}"
+  pidfile=/var/run/${name}.${profile}.pid
+  logfile=/var/log/raven-rtr.${profile}.log
+else
+  if [ -n "${raven_rtr_profiles}" ] && [ -n "$1" ]; then
+    for profile in ${raven_rtr_profiles}; do
+      echo "===> ${name} profile: ${profile}"
+      /usr/local/etc/rc.d/${name} "$1" "${profile}"
+    done
+    exit 0
+  fi
+  pidfile=/var/run/${name}.pid
+  logfile=/var/log/raven-rtr.log
+fi
+
+command=/usr/sbin/daemon
+command_args="-r -R 30 -P ${pidfile} -o ${logfile} /usr/sbin/chroot -u ${raven_rtr_runas} -g ${raven_rtr_runas} -G ${raven_rtr_runas} / /usr/local/bin/raven rtr monitor --cache ${raven_rtr_cache} --transport ${raven_rtr_transport} --log-file ${raven_rtr_dir}/rtr-telemetry.ndjson --anomaly-snapshot ${raven_rtr_dir}/anomaly-baseline.json --prometheus ${raven_rtr_prometheus} --log-format json"
+raven_dir_precmd() {
+  install -d -o ${raven_rtr_runas} -g ${raven_rtr_runas} -m 755 "${raven_rtr_dir}"
+}
+start_precmd=raven_dir_precmd
+raven_rtr_env="HOME=${raven_rtr_dir}"
+run_rc_command "$1"
