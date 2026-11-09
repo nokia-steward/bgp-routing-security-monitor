@@ -43,7 +43,7 @@ if [ -n "$2" ]; then
     echo "$0: no profiles are configured" >&2
     exit 1
   fi
-  for var in enable cache transport prometheus; do
+  for var in enable runas cache transport prometheus; do
     eval "raven_rtr_${var}=\${raven_rtr_${profile}_${var}:-\${raven_rtr_${var}}}"
   done
   eval "raven_rtr_dir=\${raven_rtr_${profile}_dir:-${raven_rtr_dir}/${profile}}"

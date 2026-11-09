@@ -5,12 +5,17 @@
 RAVEN is pure Go and builds on FreeBSD with the Go package of the ports collection:
 
 ```sh
-pkg install go
-go build -trimpath -ldflags "-s -w" -o raven ./cmd/raven
+pkg install go gmake
+gmake build
 install -m 755 raven /usr/local/bin/raven
 ```
 
-The `Makefile` needs GNU make: `pkg install gmake` and run `gmake` in place of `make`.
+The `Makefile` needs GNU make, hence `gmake`; it sets the version, commit and date that `raven version` reports. A plain `go build ./cmd/raven` works as well but leaves `raven version` at `dev`; to set them by hand:
+
+```sh
+M=$(sed -n 's/^module //p' go.mod)
+go build -trimpath -ldflags "-s -w -X $M/internal/buildinfo.Version=$(git describe --tags --always) -X $M/internal/buildinfo.Commit=$(git rev-parse --short HEAD) -X $M/internal/buildinfo.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o raven ./cmd/raven
+```
 
 ## Running `raven rtr monitor` as a service
 
@@ -40,7 +45,7 @@ The log of the process goes to `/var/log/raven-rtr.log` (add it to `newsyslog.co
 
 ### Several caches
 
-To follow several caches, one monitor each, name the profiles and set the cache of each; every other variable can be set for a profile as `raven_rtr_<profile>_<name>`. Each profile gets its own directory under `raven_rtr_dir`, its own log (`/var/log/raven-rtr.<profile>.log`) and pid file, and needs its own metrics port:
+To follow several caches, one monitor each, name the profiles and set the cache of each; `runas`, `transport`, `prometheus`, `dir` and `enable` can be set for a profile as well, as `raven_rtr_<profile>_<name>`, and fall back to the plain variable. Each profile gets its own directory under `raven_rtr_dir`, its own log (`/var/log/raven-rtr.<profile>.log`) and pid file, and needs its own metrics port:
 
 ```sh
 sysrc raven_rtr_profiles="local cloudflare"
