@@ -15,6 +15,7 @@ import (
 	"github.com/nokia/bgp-routing-security-monitor/internal/routetable"
 	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store"
 	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia/bgp-routing-security-monitor/internal/validation/rov"
 )
 
 // RouteResponse is a single route in API output.
@@ -38,9 +39,23 @@ type RouteResponse struct {
 	OriginASN uint32   `json:"origin_asn"`
 	ASPath    []uint32 `json:"as_path"`
 	NextHop   string   `json:"next_hop"`
-	ROV       string   `json:"rov"`
-	ROVReason string   `json:"rov_reason,omitempty"`
-	ASPA      string   `json:"aspa"`
+	// Communities and LargeCommunities are the route's BGP communities, as
+	// "65535:666" (RFC 1997) and "6695:1911:172" (RFC 8092).
+	Communities      []string `json:"communities,omitempty"`
+	LargeCommunities []string `json:"large_communities,omitempty"`
+	ROV              string   `json:"rov"`
+	ROVReason        string   `json:"rov_reason,omitempty"`
+	// ROVReasonCode is why the route has its ROV state: valid, not_found,
+	// invalid_length, invalid_origin, invalid_as0 or invalid_as_set.
+	// Omitted for a route restored from a snapshot and not yet revalidated.
+	ROVReasonCode string `json:"rov_reason_code,omitempty"`
+	// ROVVRPs are the VRPs covering the route, split as Routinator's
+	// validity API splits them, and ROVDecidingVRP the one ROVReason names.
+	// Both are looked up in the VRP store when the route is listed, not
+	// stored with it.
+	ROVVRPs        *ROVVRPsResponse `json:"rov_vrps,omitempty"`
+	ROVDecidingVRP *VRPResponse     `json:"rov_deciding_vrp,omitempty"`
+	ASPA           string           `json:"aspa"`
 	// ASPAProcedure is upstream or downstream; ASPAProcedureSource says
 	// whether it came from an aspa-peers entry or the default.
 	ASPAProcedure       string `json:"aspa_procedure"`
@@ -52,6 +67,52 @@ type RouteResponse struct {
 	// Timestamp is when the route was received (types.Route.Timestamp),
 	// RFC 3339 in UTC; "" if unknown.
 	Timestamp string `json:"timestamp"`
+}
+
+// VRPResponse is one VRP in API output.
+type VRPResponse struct {
+	Prefix    string `json:"prefix"`
+	ASN       uint32 `json:"asn"`
+	MaxLength uint8  `json:"max_length"`
+}
+
+// ROVVRPsResponse lists the VRPs covering a route: Matched have its origin
+// AS and allow its prefix length; UnmatchedAS name another AS (AS0
+// included, and every VRP when the origin is NONE or not known);
+// UnmatchedLength have its origin AS but a maxLength shorter than its
+// prefix. Each list holds at most MaxVRPTrace entries; a list cut short
+// has its full length in the matching _count field, which is omitted
+// otherwise.
+type ROVVRPsResponse struct {
+	Matched              []VRPResponse `json:"matched"`
+	UnmatchedAS          []VRPResponse `json:"unmatched_as"`
+	UnmatchedLength      []VRPResponse `json:"unmatched_length"`
+	MatchedCount         int           `json:"matched_count,omitempty"`
+	UnmatchedASCount     int           `json:"unmatched_as_count,omitempty"`
+	UnmatchedLengthCount int           `json:"unmatched_length_count,omitempty"`
+}
+
+// MaxVRPTrace is how many VRPs each rov_vrps list shows at most. A prefix
+// under a large aggregate can be covered by hundreds of VRPs.
+const MaxVRPTrace = 16
+
+// vrpList is vrps in API output, cut to MaxVRPTrace, and their count if it
+// was cut (0 if not). It is never nil, so an empty list is [] in JSON.
+func vrpList(vrps []types.VRP) ([]VRPResponse, int) {
+	n := 0
+	if len(vrps) > MaxVRPTrace {
+		n = len(vrps)
+		vrps = vrps[:MaxVRPTrace]
+	}
+	out := make([]VRPResponse, len(vrps))
+	for i, v := range vrps {
+		out[i] = vrpResponse(v)
+	}
+	return out, n
+}
+
+func vrpResponse(v types.VRP) VRPResponse {
+	return VRPResponse{Prefix: v.Prefix.String(), ASN: v.ASN, MaxLength: v.MaxLength}
 }
 
 // FailingHopResponse is the customer→provider hop that failed ASPA: the
@@ -134,8 +195,11 @@ type Server struct {
 	// bmpPeers lists the BMP peers: the BMP listener in production.
 	bmpPeers peerLister
 	// routers names the monitored routers: the BMP listener in production.
-	routers   routerDirectory
-	vrpStore  *store.VRPStore
+	routers  routerDirectory
+	vrpStore *store.VRPStore
+	// rov explains listed routes' ROV against vrpStore (rov_vrps); nil
+	// without a VRP store.
+	rov       *rov.Annotator
 	log       *slog.Logger
 	version   string
 	startTime time.Time
@@ -166,6 +230,9 @@ func NewServer(table *routetable.Table, bmpListen *bmp.Listener, vrpStore *store
 		s.bmpPeers = bmpListen
 		s.routers = bmpListen
 	}
+	if vrpStore != nil {
+		s.rov = rov.NewAnnotator(vrpStore)
+	}
 	s.mux.HandleFunc("/api/v1/routes", s.handleRoutes)
 	s.mux.HandleFunc("/api/v1/peers", s.handlePeers)
 	s.mux.HandleFunc("/api/v1/status", s.handleStatus)
@@ -187,7 +254,7 @@ func (s *Server) NotifyRoute(route *types.Route) {
 			continue
 		}
 		if !built {
-			rr, built = routeToResponse(route, s.routerName(route.Router)), true
+			rr, built = s.routeResponse(route, s.routerName(route.Router)), true
 		}
 		select {
 		case ch <- rr:
@@ -245,7 +312,7 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 			name = s.routerName(route.Router)
 			names[route.Router] = name
 		}
-		resp = append(resp, routeToResponse(route, name))
+		resp = append(resp, s.routeResponse(route, name))
 	}
 
 	writeJSON(w, resp)
@@ -436,6 +503,7 @@ func routeToResponse(r *types.Route, routerName string) RouteResponse {
 		NextHop:           r.NextHop.String(),
 		ROV:               r.ROV.State.String(),
 		ROVReason:         r.ROV.Reason,
+		ROVReasonCode:     r.ROV.Code.String(),
 		ASPA:              r.ASPA.State.String(),
 
 		ASPAProcedure:       r.ASPA.Procedure.String(),
@@ -449,7 +517,36 @@ func routeToResponse(r *types.Route, routerName string) RouteResponse {
 	if h := r.ASPA.FailingHop; h != nil {
 		rr.ASPAFailingHop = &FailingHopResponse{CustomerASN: h.CustomerASN, ProviderASN: h.ProviderASN}
 	}
+	for _, c := range r.Communities {
+		rr.Communities = append(rr.Communities, c.String())
+	}
+	for _, c := range r.LargeCommunities {
+		rr.LargeCommunities = append(rr.LargeCommunities, c.String())
+	}
 	return rr
+}
+
+// routeResponse is routeToResponse with the route's VRP trace (rov_vrps,
+// rov_deciding_vrp) looked up in the VRP store now.
+func (s *Server) routeResponse(r *types.Route, routerName string) RouteResponse {
+	rr := routeToResponse(r, routerName)
+	if s.rov != nil {
+		addVRPTrace(&rr, s.rov.Explain(r))
+	}
+	return rr
+}
+
+// addVRPTrace sets rr's rov_vrps and rov_deciding_vrp from e.
+func addVRPTrace(rr *RouteResponse, e rov.Explanation) {
+	var t ROVVRPsResponse
+	t.Matched, t.MatchedCount = vrpList(e.Matched)
+	t.UnmatchedAS, t.UnmatchedASCount = vrpList(e.UnmatchedAS)
+	t.UnmatchedLength, t.UnmatchedLengthCount = vrpList(e.UnmatchedLength)
+	rr.ROVVRPs = &t
+	if e.HasDeciding {
+		v := vrpResponse(e.Deciding)
+		rr.ROVDecidingVRP = &v
+	}
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {

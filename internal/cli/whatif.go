@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"text/tabwriter"
@@ -44,7 +45,7 @@ func newWhatIfCmd(addr *string) *cobra.Command {
 				if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 					return fmt.Errorf("what-if: decode: %w", err)
 				}
-				printRejectInvalidResult(&result, format)
+				printRejectInvalidResult(os.Stdout, &result, format)
 			}
 			if aspaEnforce {
 				resp, err := apiGet(*addr, "/api/v1/whatif/aspa-enforce", params)
@@ -70,9 +71,9 @@ func newWhatIfCmd(addr *string) *cobra.Command {
 	return cmd
 }
 
-func printRejectInvalidResult(r *whatif.RejectInvalidResult, format string) {
+func printRejectInvalidResult(out io.Writer, r *whatif.RejectInvalidResult, format string) {
 	if format == "json" {
-		enc := json.NewEncoder(os.Stdout)
+		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
 		enc.Encode(r) //nolint:errcheck
 		return
@@ -83,27 +84,39 @@ func printRejectInvalidResult(r *whatif.RejectInvalidResult, format string) {
 		pct = float64(r.RejectedRoutes) / float64(r.TotalRoutes) * 100
 	}
 
-	fmt.Println("\n  REJECT-INVALID IMPACT SUMMARY")
-	fmt.Println("  ─────────────────────────────────────────────────")
-	fmt.Printf("  Routes currently received:     %d\n", r.TotalRoutes)
-	fmt.Printf("  Routes that would be rejected: %d (%.2f%%)\n", r.RejectedRoutes, pct)
-	fmt.Printf("  Prefixes affected:             %d\n", r.AffectedPrefixes)
-	fmt.Printf("  Unique origin ASNs affected:   %d\n\n", r.AffectedOrigins)
+	fmt.Fprintln(out, "\n  REJECT-INVALID IMPACT SUMMARY")
+	fmt.Fprintln(out, "  ─────────────────────────────────────────────────")
+	fmt.Fprintf(out, "  Routes currently received:     %d\n", r.TotalRoutes)
+	fmt.Fprintf(out, "  Routes that would be rejected: %d (%.2f%%)\n", r.RejectedRoutes, pct)
+	fmt.Fprintf(out, "  Prefixes affected:             %d\n", r.AffectedPrefixes)
+	fmt.Fprintf(out, "  Unique origin ASNs affected:   %d\n", r.AffectedOrigins)
+	fmt.Fprintf(out, "  Carrying BLACKHOLE (RFC 7999): %d routes, %d prefixes\n\n", r.BlackholeRoutes, r.BlackholePrefixes)
 
-	if len(r.TopOrigins) > 0 {
-		fmt.Println("  TOP AFFECTED ORIGIN ASNs")
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(w, "  ORIGIN ASN\tROUTES\tPREFIXES\tREASON")
-		for _, o := range r.TopOrigins {
-			fmt.Fprintf(w, "  AS%d\t%d\t%d\t%s\n", o.OriginASN, o.RouteCount, o.PrefixCount, o.Reason)
+	if len(r.ByReason) > 0 {
+		fmt.Fprintln(out, "  REJECTED BY ROV REASON")
+		w := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
+		fmt.Fprintln(w, "  REASON\tROUTES\tPREFIXES")
+		for _, b := range r.ByReason {
+			fmt.Fprintf(w, "  %s\t%d\t%d\n", b.ReasonCode, b.RouteCount, b.PrefixCount)
 		}
 		w.Flush()
-		fmt.Println()
+		fmt.Fprintln(out)
+	}
+
+	if len(r.TopOrigins) > 0 {
+		fmt.Fprintln(out, "  TOP AFFECTED ORIGIN ASNs")
+		w := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
+		fmt.Fprintln(w, "  ORIGIN ASN\tROUTES\tPREFIXES\tREASON")
+		for _, o := range r.TopOrigins {
+			fmt.Fprintf(w, "  AS%d\t%d\t%d\t%s\n", o.OriginASN, o.RouteCount, o.PrefixCount, o.ReasonSummary())
+		}
+		w.Flush()
+		fmt.Fprintln(out)
 	}
 
 	if len(r.ByPeer) > 0 {
-		fmt.Println("  BY BMP PEER")
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		fmt.Fprintln(out, "  BY BMP PEER")
+		w := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
 		fmt.Fprintln(w, "  PEER\tREJECTED\tTOTAL\t%")
 		for _, p := range r.ByPeer {
 			peerPct := 0.0
@@ -113,7 +126,7 @@ func printRejectInvalidResult(r *whatif.RejectInvalidResult, format string) {
 			fmt.Fprintf(w, "  %s (AS%d)\t%d\t%d\t%.2f%%\n", p.PeerAddr, p.PeerASN, p.Rejected, p.Total, peerPct)
 		}
 		w.Flush()
-		fmt.Println()
+		fmt.Fprintln(out)
 	}
 }
 

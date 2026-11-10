@@ -106,8 +106,12 @@ The route table is in memory. Routes live in a 256-shard map keyed by the
 route key, so lookups and updates for different routes rarely contend for
 the same lock. Beside it RAVEN keeps:
 
-- a prefix index (a BART trie), which answers exact-prefix queries and finds
-  every route at or more specific than a prefix, as revalidation needs;
+- a prefix index (a BART trie), which answers exact-prefix queries, finds
+  every route at or more specific than a prefix (revalidation after an RTR
+  update, and `raven routes --match longer`), and every route at or less
+  specific than one (`raven routes --match covering`). A plain `--prefix`
+  query is an exact match; see `--match` in
+  [raven routes](../user-guide/cli-reference.md#raven-routes);
 - an origin-ASN index;
 - a posture index, holding the default view's routes (Adj-RIB-In
   pre-policy and Loc-RIB) only;

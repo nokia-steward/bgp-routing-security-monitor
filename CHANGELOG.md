@@ -51,6 +51,26 @@ All notable changes to RAVEN are recorded here.
   the default view and per-RIB counts in the route table stats, `rib` in
   the route filter and the audit; the snapshot schema matches the snapshot
   file (router, peer distinguisher, peer type, path ID, format version).
+- ROV reason codes: routes in the API have `rov_reason_code` (`valid`,
+  `not_found`, `invalid_length`, `invalid_origin`, `invalid_as0`,
+  `invalid_as_set`), classified as Routinator does, and `rov_reason` names
+  the deciding VRP. The route table stores only the one-byte code; routes
+  are no larger.
+- VRP trace: `rov_vrps` (`matched`, `unmatched_as`, `unmatched_length`, at
+  most 16 each with a `_count` when cut) and `rov_deciding_vrp`, looked up
+  in the VRP store when a route is listed or watched. `raven routes --format
+  wide` has a `VRP` column with the deciding VRP.
+- `communities` and `large_communities` on routes in the API, as strings.
+- `raven routes --match exact|covering|longer` (API `match`, also on
+  `/api/v1/watch`): the prefix and its less specifics, or its more
+  specifics, from the prefix index. The default, `exact`, is unchanged.
+- `raven what-if --reject-invalid` breaks rejected routes and prefixes down
+  by reason code and counts those carrying BLACKHOLE (65535:666, RFC 7999);
+  JSON `by_reason`, `blackhole_routes`, `blackhole_prefixes`, and
+  `reason_code` and `reason_codes` per top origin.
+- `proto/raven/v1`: `RouteEntry` fields 18–22 (`rov_reason_code`,
+  `rov_vrps`, `rov_deciding_vrp`, `communities`, `large_communities`),
+  message `ROVVRPs`, and `RouteFilter.match`, all additive.
 
 ### Changed
 - The Loc-RIB user guide now links RFC 9069 and matches the implementation: origin AS, Loc-RIB peer and table fields, FRR 10.7.1 BMP syntax, and audit `--router` behavior.
@@ -123,6 +143,16 @@ All notable changes to RAVEN are recorded here.
 - The ASCII topology and architecture diagrams are now Mermaid diagrams.
 
 ### Fixed
+- `rov_reason` said `origin ASn not authorized by any covering VRP` for
+  every Invalid route with a known origin, including routes from the
+  authorized AS that are only longer than its VRP's maxLength, by far the
+  common case in a full table. Those now say `prefix length /32 exceeds
+  maxLength /24 of VRP 94.177.129.0/24 AS202744` (`invalid_length`), and
+  an origin mismatch names the nearest VRP. ROV state, posture and metrics
+  were right and are unchanged. The `REASON` column of `raven what-if
+  --reject-invalid` showed one route's reason for a whole origin; it now
+  lists the origin's reason codes, and `PREFIXES` counts distinct prefixes
+  instead of repeating the route count.
 - `raven watch` shows routes whose posture, ROV state or ASPA state an RTR
   update changes, not only BMP-driven changes: a VRP edit that makes a route
   ROV Invalid is printed like a hijack received over BMP. A revalidation

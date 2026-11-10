@@ -229,7 +229,7 @@ func (e *Engine) Revalidated(route *types.Route) (types.Route, bool) {
 // sameValidation reports whether a and b carry the same validation results.
 func sameValidation(a, b *types.Route) bool {
 	if a.SecurityPosture != b.SecurityPosture ||
-		a.ROV.State != b.ROV.State || a.ROV.Reason != b.ROV.Reason ||
+		a.ROV.State != b.ROV.State || a.ROV.Code != b.ROV.Code || a.ROV.Reason != b.ROV.Reason ||
 		!slices.Equal(a.ROV.MatchedVRPs, b.ROV.MatchedVRPs) ||
 		a.ASPA.State != b.ASPA.State || a.ASPA.Procedure != b.ASPA.Procedure ||
 		a.ASPA.ProcedureSource != b.ASPA.ProcedureSource || a.ASPA.Reason != b.ASPA.Reason ||

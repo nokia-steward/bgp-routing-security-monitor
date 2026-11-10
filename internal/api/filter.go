@@ -17,9 +17,12 @@ import (
 // before it in a fixed order was given, so --prefix with --peer returned the
 // prefix from every peer.
 type routeFilter struct {
-	prefix  netip.Prefix // exact prefix; invalid = any
-	origin  uint32       // origin ASN; 0 = any
-	peer    netip.Addr   // BMP peer, unmapped; invalid = any
+	prefix netip.Prefix // invalid = any
+	// pmatch says how prefix matches: exactly, or also its less specifics
+	// (covering) or more specifics (longer).
+	pmatch  prefixMatch
+	origin  uint32     // origin ASN; 0 = any
+	peer    netip.Addr // BMP peer, unmapped; invalid = any
 	posture types.SecurityPosture
 	// routers, when byRouter, are the monitored routers a route must come
 	// from: the one router address given, or the routers whose sysName is
@@ -30,6 +33,45 @@ type routeFilter struct {
 	// (types.DefaultView: adj-rib-in-pre and loc-rib) when it is absent,
 	// for routes and watch alike.
 	ribs types.RIBSet
+}
+
+// prefixMatch is the match query parameter: how a route's prefix must
+// relate to the prefix parameter.
+type prefixMatch uint8
+
+const (
+	// matchExact: the route's prefix is the prefix. The default.
+	matchExact prefixMatch = iota
+	// matchCovering: the prefix or any less specific prefix covering it.
+	matchCovering
+	// matchLonger: the prefix or any more specific prefix within it.
+	matchLonger
+)
+
+// parsePrefixMatch reads a match value: exact (or empty), covering or
+// longer.
+func parsePrefixMatch(v string) (prefixMatch, error) {
+	switch v {
+	case "", "exact":
+		return matchExact, nil
+	case "covering":
+		return matchCovering, nil
+	case "longer":
+		return matchLonger, nil
+	}
+	return 0, fmt.Errorf("invalid match %q: want exact, covering or longer", v)
+}
+
+// matches reports whether p relates to want as m says. Prefixes of
+// different address families never match.
+func (m prefixMatch) matches(want, p netip.Prefix) bool {
+	switch m {
+	case matchCovering:
+		return p.Bits() <= want.Bits() && p.Contains(want.Addr())
+	case matchLonger:
+		return want.Bits() <= p.Bits() && want.Contains(p.Addr())
+	}
+	return p == want
 }
 
 // parseRouter reads the router query parameter, as routes, watch, peers and
@@ -81,6 +123,18 @@ func parseRouteFilter(q url.Values, named func(string) []netip.Addr) (routeFilte
 		}
 		f.prefix = p
 	}
+	m, err := parsePrefixMatch(q.Get("match"))
+	if err != nil {
+		return f, err
+	}
+	if m != matchExact {
+		if !f.prefix.IsValid() {
+			return f, fmt.Errorf("match %s needs a prefix", q.Get("match"))
+		}
+		// Containment is about the network, not host bits a user typed.
+		f.prefix = f.prefix.Masked()
+	}
+	f.pmatch = m
 	if v := q.Get("origin-asn"); v != "" {
 		asn, err := strconv.ParseUint(v, 10, 32)
 		if err != nil {
@@ -111,7 +165,7 @@ func (f *routeFilter) match(r *types.Route) bool {
 	if ribs == 0 {
 		ribs = types.DefaultView // a filter not from parseRouteFilter
 	}
-	return (!f.prefix.IsValid() || r.Prefix == f.prefix) &&
+	return (!f.prefix.IsValid() || f.pmatch.matches(f.prefix, r.Prefix)) &&
 		(f.origin == 0 || r.OriginASN() == f.origin) &&
 		(!f.peer.IsValid() || r.PeerAddr.Unmap() == f.peer) &&
 		(f.posture == "" || r.SecurityPosture == f.posture) &&
@@ -127,6 +181,10 @@ func (f *routeFilter) match(r *types.Route) bool {
 func (f *routeFilter) routes(t *routetable.Table) []*types.Route {
 	var candidates []*types.Route
 	switch {
+	case f.prefix.IsValid() && f.pmatch == matchCovering:
+		candidates = t.GetCoveringIn(f.prefix, f.ribs)
+	case f.prefix.IsValid() && f.pmatch == matchLonger:
+		candidates = t.GetWithinIn(f.prefix, f.ribs)
 	case f.prefix.IsValid():
 		candidates = t.GetByPrefixIn(f.prefix, f.ribs)
 	case f.origin != 0:

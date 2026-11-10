@@ -11,7 +11,17 @@ RAVEN validates each route once on ingest:
 
 1. **ROV** (RFC 6811): RAVEN looks up the VRPs covering the route's prefix
    and compares the origin AS and prefix length against them, giving
-   `Valid`, `Invalid` or `NotFound`.
+   `Valid`, `Invalid` or `NotFound`, and a reason code saying which case
+   decided it: `valid`, `not_found`, `invalid_length` (a VRP for the origin
+   AS, but the prefix is longer than its maxLength; this takes precedence
+   over `invalid_origin`), `invalid_origin`, `invalid_as0` (every covering
+   VRP is AS0, RFC 6483 §4) or `invalid_as_set`, as Routinator classifies
+   them. See [ROV reasons](../user-guide/cli-reference.md#rov-reasons).
+   The route keeps the state, the code (one byte, in what was padding, so
+   routes are no larger), the reason text and a reference to the VRP
+   store's shared list of covering VRPs, not a copy. How each covering VRP
+   relates to the route (`rov_vrps` in the API) is worked out from the VRP
+   store when the route is listed, not stored.
 2. **ASPA**: RAVEN picks the verification procedure from the peer the route
    came from (an `aspa-peers` entry by address, then by ASN, then
    `aspa-default-procedure`) and verifies the AS_PATH as described in
