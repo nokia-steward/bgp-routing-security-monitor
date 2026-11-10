@@ -338,6 +338,16 @@ var routesCmd = &cobra.Command{
 		if v, _ := cmd.Flags().GetString("prefix"); v != "" {
 			params.Set("prefix", v)
 		}
+		switch m, _ := cmd.Flags().GetString("match"); m {
+		case "", "exact":
+		case "covering", "longer":
+			if params.Get("prefix") == "" {
+				return fmt.Errorf("--match %s needs --prefix", m)
+			}
+			params.Set("match", m)
+		default:
+			return fmt.Errorf("--match %q: want exact, covering or longer", m)
+		}
 		if v, _ := cmd.Flags().GetUint32("origin-asn"); v != 0 {
 			params.Set("origin-asn", fmt.Sprintf("%d", v))
 		}
@@ -366,73 +376,95 @@ var routesCmd = &cobra.Command{
 			return nil
 		}
 
-		var routes []struct {
-			Prefix            string `json:"prefix"`
-			Router            string `json:"router"`
-			RouterName        string `json:"router_name"`
-			PeerAddr          string `json:"peer"`
-			PeerDistinguisher string `json:"peer_distinguisher"`
-			PeerType          string `json:"peer_type"`
-			PathID            uint32 `json:"path_id"`
-			RIB               string `json:"rib"`
-			OriginASN         uint32 `json:"origin_asn"`
-			ROV               string `json:"rov"`
-			ASPA              string `json:"aspa"`
-			Posture           string `json:"posture"`
-
-			ASPAProcedure       string `json:"aspa_procedure"`
-			ASPAProcedureSource string `json:"aspa_procedure_source"`
-			ASPAFailingHop      *struct {
-				CustomerASN uint32 `json:"customer_asn"`
-				ProviderASN uint32 `json:"provider_asn"`
-			} `json:"aspa_failing_hop"`
-		}
+		var routes []routeRow
 		if err := json.NewDecoder(resp.Body).Decode(&routes); err != nil {
 			return err
 		}
-		wide := format == "wide"
-
-		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		prefixes := make([]string, len(routes))
-		for i, r := range routes {
-			prefixes[i] = r.Prefix
-		}
-		pw := prefixColWidth(prefixes)
-		fmt.Fprintf(tw, "%-*s\tROUTER\tPEER\tRIB\tORIGIN\tROV\tASPA\tPOSTURE", pw, "PREFIX")
-		if wide {
-			fmt.Fprint(tw, "\tASPA PROCEDURE\tPROCEDURE SOURCE\tFAILING HOP")
-		}
-		fmt.Fprintln(tw)
-		for _, r := range routes {
-			origin := fmt.Sprintf("AS%d", r.OriginASN)
-			if r.OriginASN == 0 {
-				origin = "-"
-			}
-			// A Loc-RIB route has no peer: it is the router's own best path.
-			peer := r.PeerAddr
-			if r.PeerType == "loc-rib" {
-				peer = "-"
-			}
-			if r.PeerDistinguisher != "" {
-				peer += " rd " + r.PeerDistinguisher
-			}
-			if r.PathID != 0 {
-				peer = fmt.Sprintf("%s path %d", peer, r.PathID)
-			}
-			fmt.Fprintf(tw, "%-*s\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
-				pw, r.Prefix, routerLabel(r.Router, r.RouterName), peer, r.RIB, origin, r.ROV, r.ASPA, r.Posture)
-			if wide {
-				hop := "-"
-				if h := r.ASPAFailingHop; h != nil {
-					hop = fmt.Sprintf("%d->%d", h.CustomerASN, h.ProviderASN)
-				}
-				fmt.Fprintf(tw, "\t%s\t%s\t%s", r.ASPAProcedure, r.ASPAProcedureSource, hop)
-			}
-			fmt.Fprintln(tw)
-		}
-		tw.Flush()
+		printRoutes(os.Stdout, routes, format == "wide")
 		return nil
 	},
+}
+
+// routeRow is the part of an /api/v1/routes route that raven routes shows.
+type routeRow struct {
+	Prefix            string `json:"prefix"`
+	Router            string `json:"router"`
+	RouterName        string `json:"router_name"`
+	PeerAddr          string `json:"peer"`
+	PeerDistinguisher string `json:"peer_distinguisher"`
+	PeerType          string `json:"peer_type"`
+	PathID            uint32 `json:"path_id"`
+	RIB               string `json:"rib"`
+	OriginASN         uint32 `json:"origin_asn"`
+	ROV               string `json:"rov"`
+	ASPA              string `json:"aspa"`
+	Posture           string `json:"posture"`
+
+	ROVDecidingVRP *struct {
+		Prefix    string `json:"prefix"`
+		ASN       uint32 `json:"asn"`
+		MaxLength uint8  `json:"max_length"`
+	} `json:"rov_deciding_vrp"`
+	ASPAProcedure       string `json:"aspa_procedure"`
+	ASPAProcedureSource string `json:"aspa_procedure_source"`
+	ASPAFailingHop      *struct {
+		CustomerASN uint32 `json:"customer_asn"`
+		ProviderASN uint32 `json:"provider_asn"`
+	} `json:"aspa_failing_hop"`
+}
+
+// vrp is the wide VRP column: the VRP that decided the route's ROV, as
+// "94.177.129.0/24-24 AS202744", or "-" if none did (not_found).
+func (r routeRow) vrp() string {
+	v := r.ROVDecidingVRP
+	if v == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%s-%d AS%d", v.Prefix, v.MaxLength, v.ASN)
+}
+
+// printRoutes writes the raven routes table; wide adds the deciding VRP and
+// the ASPA procedure, its source and the failing hop.
+func printRoutes(out io.Writer, routes []routeRow, wide bool) {
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	prefixes := make([]string, len(routes))
+	for i, r := range routes {
+		prefixes[i] = r.Prefix
+	}
+	pw := prefixColWidth(prefixes)
+	fmt.Fprintf(tw, "%-*s\tROUTER\tPEER\tRIB\tORIGIN\tROV\tASPA\tPOSTURE", pw, "PREFIX")
+	if wide {
+		fmt.Fprint(tw, "\tVRP\tASPA PROCEDURE\tPROCEDURE SOURCE\tFAILING HOP")
+	}
+	fmt.Fprintln(tw)
+	for _, r := range routes {
+		origin := fmt.Sprintf("AS%d", r.OriginASN)
+		if r.OriginASN == 0 {
+			origin = "-"
+		}
+		// A Loc-RIB route has no peer: it is the router's own best path.
+		peer := r.PeerAddr
+		if r.PeerType == "loc-rib" {
+			peer = "-"
+		}
+		if r.PeerDistinguisher != "" {
+			peer += " rd " + r.PeerDistinguisher
+		}
+		if r.PathID != 0 {
+			peer = fmt.Sprintf("%s path %d", peer, r.PathID)
+		}
+		fmt.Fprintf(tw, "%-*s\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
+			pw, r.Prefix, routerLabel(r.Router, r.RouterName), peer, r.RIB, origin, r.ROV, r.ASPA, r.Posture)
+		if wide {
+			hop := "-"
+			if h := r.ASPAFailingHop; h != nil {
+				hop = fmt.Sprintf("%d->%d", h.CustomerASN, h.ProviderASN)
+			}
+			fmt.Fprintf(tw, "\t%s\t%s\t%s\t%s", r.vrp(), r.ASPAProcedure, r.ASPAProcedureSource, hop)
+		}
+		fmt.Fprintln(tw)
+	}
+	tw.Flush()
 }
 
 // prefixColWidth returns the column width to use for a PREFIX column: the
@@ -646,6 +678,7 @@ func init() {
 
 	// routes flags
 	routesCmd.Flags().String("prefix", "", "filter by prefix (e.g. 1.0.0.0/24)")
+	routesCmd.Flags().String("match", "exact", "how --prefix matches: exact, covering (the prefix and every less specific) or longer (the prefix and every more specific)")
 	routesCmd.Flags().Uint32("origin-asn", 0, "filter by origin ASN")
 	routesCmd.Flags().String("peer", "", "filter by BMP peer address")
 	routesCmd.Flags().String("posture", "", "filter by security posture")

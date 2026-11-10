@@ -381,21 +381,27 @@ covering ROA's maxLength, so no VRP matches it and it is `Invalid`. Earlier
 releases gave these routes no origin and reported them `NotFound`, and
 pre-policy Adj-RIB-In from eBGP peers never contains them.
 
-**Check:** the `rov_reason` names your own AS and says the origin is the
-router's own:
+**Check:** the `rov_reason_code` is `invalid_length`, and the `rov_reason`
+names your own AS's VRP and says the origin is the router's own:
 
 ```bash
 raven routes --rib loc-rib --posture origin-invalid --format json | \
-  jq '.[] | {prefix, origin_asn, rov_reason}'
+  jq '.[] | {prefix, origin_asn, rov_reason_code, rov_reason}'
 ```
 
 ```json
 {
   "prefix": "2001:db8:ffff::1/128",
   "origin_asn": 64499,
-  "rov_reason": "origin AS64499 not authorized by any covering VRP; origin is the router's own AS: empty AS_PATH (RFC 6811 §2)"
+  "rov_reason_code": "invalid_length",
+  "rov_reason": "prefix length /128 exceeds maxLength /48 of VRP 2001:db8::/32 AS64499; origin is the router's own AS: empty AS_PATH (RFC 6811 §2)"
 }
 ```
+
+Earlier releases gave these routes the reason `origin AS64499 not
+authorized by any covering VRP`, which pointed at the wrong problem. A
+route with `invalid_origin` instead is one whose AS has no VRP covering it
+at all.
 
 **What to do:**
 

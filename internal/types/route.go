@@ -363,10 +363,33 @@ type Community struct {
 	Low  uint16
 }
 
+// CommunityBlackhole is the well-known BLACKHOLE community, 65535:666
+// (RFC 7999 §5).
+var CommunityBlackhole = Community{High: 65535, Low: 666}
+
+// String formats the community as "high:low", e.g. "65535:666".
+func (c Community) String() string { return fmt.Sprintf("%d:%d", c.High, c.Low) }
+
 type LargeCommunity struct {
 	GlobalAdmin uint32
 	LocalData1  uint32
 	LocalData2  uint32
+}
+
+// String formats the large community as "global:local1:local2"
+// (RFC 8092), e.g. "6695:1911:172".
+func (c LargeCommunity) String() string {
+	return fmt.Sprintf("%d:%d:%d", c.GlobalAdmin, c.LocalData1, c.LocalData2)
+}
+
+// HasCommunity reports whether the route carries community c.
+func (r *Route) HasCommunity(c Community) bool {
+	for _, x := range r.Communities {
+		if x == c {
+			return true
+		}
+	}
+	return false
 }
 
 // ─── BMP RIB types ───
@@ -513,10 +536,73 @@ func (s ROVState) String() string {
 	}
 }
 
+// ROVResult is a route's ROV annotation.
+//
+// MatchedVRPs is the VRP store's shared covering list (FindCovering), not a
+// copy, so it costs a slice header per route. Code is one byte that sits in
+// the padding after State, so adding it did not grow the struct: the route
+// table holds millions of these. Which VRPs matched, and how, is worked out
+// again at query time (rov.Annotator.Explain) rather than stored.
 type ROVResult struct {
 	State       ROVState
+	Code        ROVReasonCode
 	MatchedVRPs []VRP
 	Reason      string
+}
+
+// ROVReasonCode says why a route has its ROV state, as RFC 6811 and
+// Routinator's validity API classify it. The zero value, ROVReasonUnknown,
+// is a route not validated since it was restored from a snapshot (snapshots
+// keep only the state).
+type ROVReasonCode uint8
+
+const (
+	ROVReasonUnknown ROVReasonCode = iota
+	// ROVReasonValid: a covering VRP has the route's origin AS and a
+	// maxLength at least the route's prefix length.
+	ROVReasonValid
+	// ROVReasonNotFound: no VRP covers the prefix, or the origin is not
+	// known (an empty AS_PATH from a router whose AS RAVEN does not know).
+	ROVReasonNotFound
+	// ROVReasonInvalidLength: a covering VRP has the route's origin AS, but
+	// the prefix is longer than its maxLength. It takes precedence over
+	// ROVReasonInvalidOrigin when other covering VRPs name other ASes.
+	ROVReasonInvalidLength
+	// ROVReasonInvalidOrigin: covering VRPs exist, none has the route's
+	// origin AS, and not all of them are AS0.
+	ROVReasonInvalidOrigin
+	// ROVReasonInvalidAS0: every covering VRP is AS0 (RFC 6483 §4, RFC
+	// 7607): the holder says the prefix should not be routed at all.
+	ROVReasonInvalidAS0
+	// ROVReasonInvalidASSet: the AS_PATH ends in an AS_SET, so the origin
+	// is NONE (RFC 6811 §2), which no covering VRP matches.
+	ROVReasonInvalidASSet
+)
+
+var rovReasonNames = [...]string{
+	ROVReasonUnknown:       "",
+	ROVReasonValid:         "valid",
+	ROVReasonNotFound:      "not_found",
+	ROVReasonInvalidLength: "invalid_length",
+	ROVReasonInvalidOrigin: "invalid_origin",
+	ROVReasonInvalidAS0:    "invalid_as0",
+	ROVReasonInvalidASSet:  "invalid_as_set",
+}
+
+// String names the code as the API's rov_reason_code gives it: valid,
+// not_found, invalid_length, invalid_origin, invalid_as0 or invalid_as_set;
+// "" for ROVReasonUnknown.
+func (c ROVReasonCode) String() string {
+	if int(c) < len(rovReasonNames) {
+		return rovReasonNames[c]
+	}
+	return "unknown"
+}
+
+// ROVReasonCodes lists the known codes, ROVReasonUnknown excluded, in order.
+var ROVReasonCodes = []ROVReasonCode{
+	ROVReasonValid, ROVReasonNotFound, ROVReasonInvalidLength,
+	ROVReasonInvalidOrigin, ROVReasonInvalidAS0, ROVReasonInvalidASSet,
 }
 
 type VRP struct {

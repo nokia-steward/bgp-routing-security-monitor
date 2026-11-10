@@ -42,6 +42,10 @@ message RouteFilter {
   // post-policy), loc-rib, adj-rib-out-pre, adj-rib-out-post. Empty means the
   // default view: adj-rib-in-pre and loc-rib.
   repeated string ribs = 6;
+  // How prefix matches: "exact" (or empty, the default), "covering" (the
+  // prefix and every less specific prefix covering it) or "longer" (the
+  // prefix and every more specific prefix within it).
+  string match = 7;
 }
 
 message RouteEntry {
@@ -65,12 +69,38 @@ message RouteEntry {
   string rib = 15;                // "adj-rib-in-pre", "adj-rib-in-post", "loc-rib", "adj-rib-out-pre", "adj-rib-out-post"
   string peer_type = 16;          // BMP peer type: "global", "rd", "local", "loc-rib"
   string peer_distinguisher = 17; // the peer's VRF RD ("65000:1", "192.0.2.1:7", "65000L:1"); empty for a global peer
+  // Why the route has its rov_state: "valid", "not_found", "invalid_length",
+  // "invalid_origin", "invalid_as0" or "invalid_as_set". Empty for a route
+  // restored from a snapshot and not yet revalidated.
+  string rov_reason_code = 18;
+  // The VRPs covering the route, split as Routinator's validity API does,
+  // looked up when the route is listed.
+  ROVVRPs rov_vrps = 19;
+  // The VRP rov_reason names; unset for "not_found".
+  VRPEntry rov_deciding_vrp = 20;
+  repeated string communities = 21;       // RFC 1997, "65535:666"
+  repeated string large_communities = 22; // RFC 8092, "6695:1911:172"
 }
 
 message VRPEntry {
   string prefix = 1;
   uint32 asn = 2;
   uint32 max_length = 3;
+}
+
+// The VRPs covering a route. matched: the route's origin AS, maxLength at
+// least its prefix length. unmatched_as: another AS (AS0 included; every VRP
+// when the origin is NONE or unknown). unmatched_length: the route's origin
+// AS, maxLength shorter than its prefix. Each list holds at most 16 entries;
+// a list cut short has its full length in the matching _count field, which
+// is 0 otherwise.
+message ROVVRPs {
+  repeated VRPEntry matched = 1;
+  repeated VRPEntry unmatched_as = 2;
+  repeated VRPEntry unmatched_length = 3;
+  uint32 matched_count = 4;
+  uint32 unmatched_as_count = 5;
+  uint32 unmatched_length_count = 6;
 }
 
 message ASPADetail {

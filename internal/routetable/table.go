@@ -703,6 +703,34 @@ func (t *Table) GetByPrefixIn(prefix netip.Prefix, ribs types.RIBSet) []*types.R
 	return t.resolveKeys(keys, ribs)
 }
 
+// GetCoveringIn returns the routes of the RIBs ribs whose prefix is equal to
+// or less specific than prefix (its supernets in the prefix index), least
+// specific prefix first. A prefix with host bits set is masked first.
+func (t *Table) GetCoveringIn(prefix netip.Prefix, ribs types.RIBSet) []*types.Route {
+	var lists [][]types.RouteKey
+	t.prefixMu.RLock()
+	// Supernets yields the longest match first; collected, then reversed.
+	for _, keys := range t.prefixIdx.Supernets(prefix.Masked()) {
+		lists = append(lists, slices.Clone(keys)) // changed in place; see prefixMu
+	}
+	t.prefixMu.RUnlock()
+	slices.Reverse(lists)
+	return t.resolveKeys(slices.Concat(lists...), ribs)
+}
+
+// GetWithinIn returns the routes of the RIBs ribs whose prefix is equal to
+// or more specific than prefix (its subnets in the prefix index), in CIDR
+// order. A prefix with host bits set is masked first.
+func (t *Table) GetWithinIn(prefix netip.Prefix, ribs types.RIBSet) []*types.Route {
+	var keys []types.RouteKey
+	t.prefixMu.RLock()
+	for _, ks := range t.prefixIdx.Subnets(prefix.Masked()) {
+		keys = append(keys, ks...) // copied out; see prefixMu
+	}
+	t.prefixMu.RUnlock()
+	return t.resolveKeys(keys, ribs)
+}
+
 // GetByOriginASN returns the default view's routes originated by asn.
 func (t *Table) GetByOriginASN(asn uint32) []*types.Route {
 	return t.GetByOriginASNIn(asn, types.DefaultView)

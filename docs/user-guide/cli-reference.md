@@ -228,6 +228,8 @@ Adj-RIB-In pre-policy and Loc-RIB.
 ```bash
 raven routes
 raven routes --prefix 203.0.113.0/24
+raven routes --prefix 203.0.113.128/25 --match covering
+raven routes --prefix 203.0.112.0/22 --match longer
 raven routes --origin-asn 64502
 raven routes --peer 198.51.100.1
 raven routes --router edge1
@@ -244,7 +246,8 @@ raven routes --format json
 
 | Flag | Description |
 |---|---|
-| `--prefix` | Filter by prefix (exact match) |
+| `--prefix` | Filter by prefix: exactly this prefix, unless `--match` says otherwise |
+| `--match` | How `--prefix` matches: `exact` (default), `covering` (the prefix and every less specific prefix in the table that covers it) or `longer` (the prefix and every more specific prefix within it). Needs `--prefix` |
 | `--origin-asn` | Filter by origin ASN |
 | `--peer` | Filter by BMP peer address. An IPv4 peer matches in plain or IPv4-mapped form |
 | `--router` | Filter by monitored router: its BMP source address or its BMP sysName |
@@ -286,6 +289,30 @@ invalid rib: unknown RIB "adj-rib-in": want adj-rib-in-pre (or pre-policy), adj-
 
 `secured` `origin-only` `path-suspect` `path-only` `unverified` `origin-invalid`
 
+### --match
+
+`--prefix` alone is an exact match: `--prefix 203.0.113.0/24` returns
+routes for `203.0.113.0/24` and nothing else, not the `/16` that covers it
+or the `/25`s inside it. That is the default, as it always was. `--match`
+widens it:
+
+- `--match covering` returns the prefix and every less specific prefix in
+  the table that covers it, least specific first. Use it to see what
+  traffic to an address or a more-specific would follow if that route were
+  withdrawn or rejected: `--prefix 203.0.113.7/32 --match covering`. The
+  prefix itself need not be in the table.
+- `--match longer` returns the prefix and every more specific prefix
+  within it, in address order: `--prefix 203.0.112.0/22 --match longer`
+  lists the `/22` and every `/23`, `/24` and longer inside it, for example
+  more-specifics hijacking part of your space.
+
+Both use the route table's prefix index rather than scanning the table,
+and every other filter applies to the routes they return. Host bits in
+`--prefix` are ignored with `covering` and `longer`. The API takes the same
+values as the `match` query parameter on `/api/v1/routes` and
+`/api/v1/watch`; an unknown value, or `covering` or `longer` without
+`prefix`, returns HTTP 400.
+
 **Example output:**
 
 ```text
@@ -325,19 +352,21 @@ of the ROA for `2001:db8::/32`; see
 
 ### --format wide
 
-`--format wide` adds three columns that explain each route's ASPA result:
+`--format wide` adds the VRP that decided each route's ROV result, and
+three columns that explain its ASPA result:
 
 ```text
-PREFIX                    ROUTER     PEER                             RIB             ORIGIN   ROV       ASPA     POSTURE       ASPA PROCEDURE  PROCEDURE SOURCE  FAILING HOP
-203.0.113.0/24            edge1      198.51.100.1                     adj-rib-in-pre  AS64502  Valid     Invalid  path-suspect  upstream        config-asn        64501->64500
-198.51.100.0/24           edge1      192.0.2.250                      adj-rib-in-pre  AS64503  NotFound  Valid    path-only     upstream        config-address    -
-2001:db8:2000::/36        edge1      198.51.100.1                     adj-rib-in-pre  AS64503  NotFound  Invalid  path-suspect  upstream        config-asn        -
-203.0.113.0/24            edge1      198.51.100.2                     adj-rib-in-pre  AS64502  Valid     Valid    secured       downstream      config-address    -
-2001:db8:3000::/36        192.0.2.2  2001:db8::2 rd 65000:100 path 2  adj-rib-in-pre  AS64504  NotFound  Unknown  unverified    upstream        default           -
+PREFIX                    ROUTER     PEER                             RIB             ORIGIN   ROV       ASPA     POSTURE       VRP                        ASPA PROCEDURE  PROCEDURE SOURCE  FAILING HOP
+203.0.113.0/24            edge1      198.51.100.1                     adj-rib-in-pre  AS64502  Valid     Invalid  path-suspect  203.0.113.0/24-24 AS64502  upstream        config-asn        64501->64500
+198.51.100.0/24           edge1      192.0.2.250                      adj-rib-in-pre  AS64503  NotFound  Valid    path-only     -                          upstream        config-address    -
+2001:db8:2000::/36        edge1      198.51.100.1                     adj-rib-in-pre  AS64503  NotFound  Invalid  path-suspect  -                          upstream        config-asn        -
+203.0.113.0/24            edge1      198.51.100.2                     adj-rib-in-pre  AS64502  Valid     Valid    secured       203.0.113.0/24-24 AS64502  downstream      config-address    -
+2001:db8:3000::/36        192.0.2.2  2001:db8::2 rd 65000:100 path 2  adj-rib-in-pre  AS64504  NotFound  Unknown  unverified    -                          upstream        default           -
 ```
 
 | Column | Meaning |
 |---|---|
+| `VRP` | The VRP that decided the route's ROV result, as `prefix-maxLength ASn`, or `-` when none covers it (`NotFound`). For `Valid`, the VRP that matched; for an `Invalid` route the one its `rov_reason` names (see [ROV reasons](#rov-reasons)) |
 | `ASPA PROCEDURE` | `upstream` or `downstream`: the verification procedure RAVEN used for this route |
 | `PROCEDURE SOURCE` | Where the procedure came from: `config-address` (an `aspa-peers` entry for the peer address), `config-asn` (an `aspa-peers` entry for the peer ASN; for a Loc-RIB route, for the neighbor AS in its path) or `default` (`aspa-default-procedure`) |
 | `FAILING HOP` | For an ASPA `Invalid`, the hop that failed, as `customer->provider`: the customer AS's ASPA record does not list that provider. `-` when no hop failed |
@@ -373,8 +402,28 @@ objects. This is the leaking route from the examples above:
       64502
     ],
     "next_hop": "198.51.100.1",
+    "communities": [
+      "64500:120"
+    ],
     "rov": "Valid",
     "rov_reason": "matches VRP {203.0.113.0/24, AS64502, /24}",
+    "rov_reason_code": "valid",
+    "rov_vrps": {
+      "matched": [
+        {
+          "prefix": "203.0.113.0/24",
+          "asn": 64502,
+          "max_length": 24
+        }
+      ],
+      "unmatched_as": [],
+      "unmatched_length": []
+    },
+    "rov_deciding_vrp": {
+      "prefix": "203.0.113.0/24",
+      "asn": 64502,
+      "max_length": 24
+    },
     "aspa": "Invalid",
     "aspa_procedure": "upstream",
     "aspa_procedure_source": "config-asn",
@@ -422,7 +471,20 @@ above, from `raven routes --rib loc-rib --format json`:
   "as_path": null,
   ...
   "rov": "Invalid",
-  "rov_reason": "origin AS64499 not authorized by any covering VRP; origin is the router's own AS: empty AS_PATH (RFC 6811 §2)",
+  "rov_reason": "prefix length /128 exceeds maxLength /48 of VRP 2001:db8::/32 AS64499; origin is the router's own AS: empty AS_PATH (RFC 6811 §2)",
+  "rov_reason_code": "invalid_length",
+  "rov_vrps": {
+    "matched": [],
+    "unmatched_as": [],
+    "unmatched_length": [
+      {
+        "prefix": "2001:db8::/32",
+        "asn": 64499,
+        "max_length": 48
+      }
+    ]
+  },
+  ...
   "aspa": "Unknown",
   "aspa_procedure": "upstream",
   "aspa_procedure_source": "default",
@@ -460,8 +522,13 @@ above, from `raven routes --rib loc-rib --format json`:
 | `origin_asn` | The origin AS (RFC 6811 §2): the last AS of the AS_PATH's final AS_SEQUENCE, or the router's own AS for an empty AS_PATH or one ending in a confederation segment (see [The origin AS](../architecture/validation-engine.md#the-origin-as)). `0` when the route has no origin (a path ending in an AS_SET, origin NONE) or RAVEN does not know the router's AS. The table shows `-` |
 | `as_path` | The AS_PATH, neighbor first, origin last |
 | `next_hop` | The BGP next hop |
+| `communities` | The route's BGP communities (RFC 1997) as `high:low`, for example `65535:666` (BLACKHOLE, RFC 7999). Omitted when it has none |
+| `large_communities` | The route's large communities (RFC 8092) as `global:local1:local2`, for example `6695:1911:172`. Omitted when it has none |
 | `rov` | `Valid`, `Invalid` or `NotFound` |
-| `rov_reason` | Why ROV reached its result |
+| `rov_reason` | Why ROV reached its result, naming the VRP that decided it (see [ROV reasons](#rov-reasons)) |
+| `rov_reason_code` | The reason as a code: `valid`, `not_found`, `invalid_length`, `invalid_origin`, `invalid_as0` or `invalid_as_set`. Omitted for a route restored from a snapshot that RAVEN has not revalidated yet |
+| `rov_vrps` | The VRPs covering the route, split as Routinator's validity API splits them: `matched` (the route's origin AS, maxLength at least its prefix length), `unmatched_as` (another AS, AS0 included) and `unmatched_length` (the route's origin AS, maxLength shorter than its prefix). Each entry is `{prefix, asn, max_length}`. Each list shows at most 16 VRPs; a longer one has its full length in `matched_count`, `unmatched_as_count` or `unmatched_length_count`, which are omitted otherwise |
+| `rov_deciding_vrp` | `{prefix, asn, max_length}`: the VRP `rov_reason` names, the `VRP` column of `--format wide`. Omitted for `not_found` |
 | `aspa` | `Valid`, `Invalid`, `Unknown` or `Unverifiable` |
 | `aspa_procedure` | `upstream` or `downstream` |
 | `aspa_procedure_source` | `config-address`, `config-asn` or `default` |
@@ -469,6 +536,35 @@ above, from `raven routes --rib loc-rib --format json`:
 | `aspa_failing_hop` | `{customer_asn, provider_asn}`: the hop that made ASPA `Invalid`. Omitted when no hop failed |
 | `posture` | The combined [security posture](security-postures.md) |
 | `timestamp` | When the monitored router received the route, from the BMP per-peer header, in RFC 3339 UTC. If the router sends a zero timestamp, RAVEN uses the time it received the BMP message instead |
+
+### ROV reasons
+
+RAVEN classifies each ROV result the way RFC 6811 and Routinator's validity
+API do, and `rov_reason_code` and `rov_reason` say which case applied:
+
+| `rov_reason_code` | `rov` | When | Example `rov_reason` |
+|---|---|---|---|
+| `valid` | `Valid` | A covering VRP has the route's origin AS and a maxLength at least its prefix length | `matches VRP {94.177.129.0/24, AS202744, /24}` |
+| `not_found` | `NotFound` | No VRP covers the prefix, or RAVEN does not know the origin | `no covering VRPs found` |
+| `invalid_length` | `Invalid` | A covering VRP has the route's origin AS, but the prefix is longer than its maxLength. This wins over `invalid_origin` when other VRPs name other ASes: the holder authorized this AS, just not this length | `prefix length /32 exceeds maxLength /24 of VRP 94.177.129.0/24 AS202744` |
+| `invalid_origin` | `Invalid` | Covering VRPs exist, none has the route's origin AS, and not all are AS0. The reason names the most specific one | `origin AS64666 not authorized by any covering VRP; nearest VRP 203.0.113.0/24 AS64502 maxLength /24` |
+| `invalid_as0` | `Invalid` | Every covering VRP is AS0 (RFC 6483 §4): the holder says the prefix should not be routed | `every covering VRP is AS0 (RFC 6483 §4); nearest VRP 192.0.2.0/24 AS0 maxLength /24` |
+| `invalid_as_set` | `Invalid` | The AS_PATH ends in an AS_SET, so the origin is NONE (RFC 6811 §2), which no VRP matches | `origin is NONE: AS_PATH ends in an AS_SET (RFC 6811 §2), which no covering VRP can match` |
+
+When the origin is your router's own AS, the reason ends with why, as in
+the Loc-RIB example above.
+
+Earlier releases reported every `Invalid` route with a known origin as
+`origin ASn not authorized by any covering VRP`, including the far more
+common case of a more-specific announced by the right AS but beyond its
+ROA's maxLength. The `rov` state and the posture were right; only the
+reason was wrong.
+
+RAVEN stores only the code with each route. `rov_vrps` and
+`rov_deciding_vrp` are looked up in the VRP store when you list the route,
+so right after an RTR update, before revalidation has reached the route,
+they can reflect the new VRPs while `rov`, `rov_reason` and
+`rov_reason_code` still show the result from before it.
 
 `timestamp` comes from the router, not from RAVEN's clock: it is when the
 monitored router received the route (RFC 7854 §4.2), not when RAVEN read
@@ -528,12 +624,12 @@ Error: --rtr is not supported yet; validate reads the running daemon's routes fo
 ```text
 PREFIX                    PEER          ORIGIN   ROV      POSTURE         REASON
 203.0.113.0/24            198.51.100.1  AS64502  Valid    secured         matches VRP {203.0.113.0/24, AS64502, /24}
-203.0.113.0/24            198.51.100.9  AS64511  Invalid  origin-invalid  origin AS64511 not authorized by any covering VRP
+203.0.113.0/24            198.51.100.9  AS64511  Invalid  origin-invalid  origin AS64511 not authorized by any covering VRP; nearest VRP 203.0.113.0/24 AS64502 maxLength /24
 ```
 
 There is one row per route RAVEN holds for the prefix: one per peer, per
-router and per ADD-PATH path. `REASON` is the ROV reason: the VRP that
-matched, the origin AS that no covering VRP authorizes, or
+router and per ADD-PATH path. `REASON` is the ROV reason (see
+[ROV reasons](#rov-reasons)), naming the VRP that decided it, or
 `no covering VRPs found`, followed for a route whose origin is the
 router's own AS by why it is (see
 [The origin AS](../architecture/validation-engine.md#the-origin-as)).
@@ -701,16 +797,46 @@ raven what-if --reject-invalid --format json
 ```text
 REJECT-INVALID IMPACT SUMMARY
 ─────────────────────────────────────────────────
-Routes currently received:     1,044,293
-Routes that would be rejected: 2,341 (0.22%)
-Prefixes affected:             1,892
+Routes currently received:     1044293
+Routes that would be rejected: 2341 (0.22%)
+Prefixes affected:             1892
 Unique origin ASNs affected:   487
+Carrying BLACKHOLE (RFC 7999): 37 routes, 21 prefixes
+
+REJECTED BY ROV REASON
+REASON           ROUTES   PREFIXES
+invalid_length   2104     1702
+invalid_origin   219      176
+invalid_as0      12       9
+invalid_as_set   6        5
+
 TOP AFFECTED ORIGIN ASNs
-ORIGIN ASN   ROUTES  PREFIXES  REASON
-AS64666      142     142       Origin AS mismatch
-AS64667      89      89        maxLength exceeded
-AS64668      71      71        Origin AS mismatch
+ORIGIN ASN   ROUTES   PREFIXES   REASON
+AS64666      142      61         invalid_origin
+AS64667      89       44         invalid_length
+AS64668      71       35         invalid_length (68), invalid_origin (3)
 ```
+
+Rejected routes are broken down by [ROV reason](#rov-reasons): routes, and
+the distinct prefixes they are for. `invalid_length` is usually most of
+them: more-specifics announced by the right AS beyond their ROA's
+maxLength, often traffic engineering or DDoS-mitigation /32s and /128s.
+The BLACKHOLE line counts rejected routes that carry the BLACKHOLE
+community (`65535:666`, RFC 7999): remote-triggered blackhole requests,
+typically host routes, which a reject-invalid policy would drop before your
+blackhole policy sees them. Accept them ahead of ROV in your import policy
+if you honour them.
+
+`REASON` in the top-origins table lists the origin's reason codes, most
+common first, with counts when there is more than one. `PREFIXES` is the
+origin's distinct rejected prefixes; earlier releases repeated the route
+count there and showed one route's reason for the whole origin.
+
+`--format json` gives the same breakdowns as `by_reason`
+(`{reason_code, route_count, prefix_count}`), `blackhole_routes` and
+`blackhole_prefixes`, and for each top origin its `reason_code`,
+`reason_codes` (counts by code) and `reason`, the `rov_reason` of one of its
+routes with that code.
 
 ### --aspa-enforce
 
