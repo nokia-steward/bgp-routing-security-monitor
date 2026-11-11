@@ -73,6 +73,6 @@ What doesn't move onto the router is the health of the RPKI infrastructure itsel
 
 RAVEN is open source under the BSD-3-Clause license, developed at Nokia.
 
-- **GitHub:** [nokia/bgp-routing-security-monitor](https://github.com/nokia/bgp-routing-security-monitor)
+- **GitHub:** [nokia/bgp-routing-security-monitor](https://github.com/nokia-steward/bgp-routing-security-monitor)
 - **License:** BSD-3-Clause
 - **Standards:** RFC 7854, RFC 9069, RFC 6811, RFC 8210, draft-ietf-sidrops-aspa-verification-24

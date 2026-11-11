@@ -23,7 +23,7 @@ go install github.com/nokia/bgp-routing-security-monitor/cmd/raven@latest
 ```
 
 Or download a pre-built binary from the
-[releases page](https://github.com/nokia/bgp-routing-security-monitor/releases)
+[releases page](https://github.com/nokia-steward/bgp-routing-security-monitor/releases)
 and place it in `/usr/local/bin/`.
 
 ## Step 2 — Create the Config File

@@ -502,6 +502,6 @@ Restart Prometheus after changing the config.
 If you encounter an issue not covered here:
 
 1. Check the logs: `journalctl -u raven -n 100` or run with `--log-level debug`
-2. Open an issue on [GitHub](https://github.com/nokia/bgp-routing-security-monitor/issues)
+2. Open an issue on [GitHub](https://github.com/nokia-steward/bgp-routing-security-monitor/issues)
    with your RAVEN version (`raven version`), config file (redact IPs if needed),
    and the relevant log output

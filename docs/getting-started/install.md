@@ -19,32 +19,32 @@ raven version
 ## Pre-built Binaries
 
 Download the latest binary for your platform from the
-[GitHub releases page](https://github.com/nokia/bgp-routing-security-monitor/releases).
+[GitHub releases page](https://github.com/nokia-steward/bgp-routing-security-monitor/releases).
 
 ```bash
 # Linux amd64
-curl -Lo raven https://github.com/nokia/bgp-routing-security-monitor/releases/latest/download/raven-linux-amd64
+curl -Lo raven https://github.com/nokia-steward/bgp-routing-security-monitor/releases/latest/download/raven-linux-amd64
 chmod +x raven
 sudo mv raven /usr/local/bin/
 ```
 
 ```bash
 # Linux arm64
-curl -Lo raven https://github.com/nokia/bgp-routing-security-monitor/releases/latest/download/raven-linux-arm64
+curl -Lo raven https://github.com/nokia-steward/bgp-routing-security-monitor/releases/latest/download/raven-linux-arm64
 chmod +x raven
 sudo mv raven /usr/local/bin/
 ```
 
 ```bash
 # macOS amd64
-curl -Lo raven https://github.com/nokia/bgp-routing-security-monitor/releases/latest/download/raven-darwin-amd64
+curl -Lo raven https://github.com/nokia-steward/bgp-routing-security-monitor/releases/latest/download/raven-darwin-amd64
 chmod +x raven
 sudo mv raven /usr/local/bin/
 ```
 
 ```bash
 # macOS arm64 (Apple Silicon)
-curl -Lo raven https://github.com/nokia/bgp-routing-security-monitor/releases/latest/download/raven-darwin-arm64
+curl -Lo raven https://github.com/nokia-steward/bgp-routing-security-monitor/releases/latest/download/raven-darwin-arm64
 chmod +x raven
 sudo mv raven /usr/local/bin/
 ```
@@ -52,7 +52,7 @@ sudo mv raven /usr/local/bin/
 ## Build from Source
 
 ```bash
-git clone https://github.com/nokia/bgp-routing-security-monitor.git
+git clone https://github.com/nokia-steward/bgp-routing-security-monitor.git
 cd bgp-routing-security-monitor
 go build -o raven ./cmd/raven
 sudo mv raven /usr/local/bin/
@@ -67,7 +67,7 @@ Prebuilt images will be published from release tags. Until then, you build the i
 ### Build the Image
 
 ```bash
-git clone https://github.com/nokia/bgp-routing-security-monitor.git
+git clone https://github.com/nokia-steward/bgp-routing-security-monitor.git
 cd bgp-routing-security-monitor
 docker build --tag raven .
 ```
