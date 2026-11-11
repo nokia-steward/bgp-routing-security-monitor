@@ -41,6 +41,18 @@ func (r *Rule) Evaluate(ctx context.Context, event Event) {
 	if !r.Trigger.Matches(event) {
 		return
 	}
+	r.fire(ctx, event)
+}
+
+// fire runs the rule for an event that matched it: cooldown, enrichers,
+// then the actions.
+//
+// An rtr_bulk_change event goes to notification actions only (webhook,
+// log): it stands for routes whose per-route actions were suppressed, and
+// must never produce a FlowSpec rule, per route or aggregate. Enrichers do
+// not run for it either; it has no route to annotate.
+func (r *Rule) fire(ctx context.Context, event Event) {
+	bulk := event.Type == EventTypeRTRBulkChange
 	if !r.checkCooldown(event) {
 		return
 	}
@@ -49,12 +61,17 @@ func (r *Rule) Evaluate(ctx context.Context, event Event) {
 	// sees the same fully annotated event. They mutate a local copy; the
 	// event the engine holds is untouched, so one rule's enrichment cannot
 	// leak into another rule's evaluation of the same event.
-	for _, enricher := range r.Enrichers {
-		enricher.Enrich(ctx, &event)
+	if !bulk {
+		for _, enricher := range r.Enrichers {
+			enricher.Enrich(ctx, &event)
+		}
 	}
 
 	var wg sync.WaitGroup
 	for _, action := range r.Actions {
+		if bulk && !isNotification(action) {
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

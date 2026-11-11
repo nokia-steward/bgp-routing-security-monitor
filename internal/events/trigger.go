@@ -124,6 +124,44 @@ func (t *CacheUnhealthyTrigger) Matches(event Event) bool {
 	return event.Type == EventTypeCacheUnhealthy
 }
 
+// SourceTrigger fires on events whose Source is one of the configured
+// sources (SourceBMP, SourceRTR). Combined with other triggers in a compound
+// one, it keeps a rule to BMP-driven or RTR-driven changes.
+type SourceTrigger struct {
+	Sources []string
+}
+
+// Matches returns true if event.Source is in the configured list.
+func (t *SourceTrigger) Matches(event Event) bool {
+	return slices.Contains(t.Sources, event.Source)
+}
+
+// RTRBulkChangeTrigger fires on rtr_bulk_change events. Such an event already
+// reaches every rule a suppressed per-route event would have fired; this
+// trigger is for a rule that wants every bulk change whatever it changed.
+type RTRBulkChangeTrigger struct{}
+
+// Matches returns true for any rtr_bulk_change event.
+func (t *RTRBulkChangeTrigger) Matches(event Event) bool {
+	return event.Type == EventTypeRTRBulkChange
+}
+
+// hasBulkTrigger reports whether t is, or contains, an rtr_bulk_change
+// trigger: whether its rule asked for bulk changes.
+func hasBulkTrigger(t Trigger) bool {
+	switch t := t.(type) {
+	case *RTRBulkChangeTrigger:
+		return true
+	case *CompoundTrigger:
+		for _, sub := range t.Triggers {
+			if hasBulkTrigger(sub) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // CompoundTrigger combines multiple sub-triggers with AND or OR logic.
 type CompoundTrigger struct {
 	// Op is "and" (all must match) or "or" (any must match). Defaults to "and".

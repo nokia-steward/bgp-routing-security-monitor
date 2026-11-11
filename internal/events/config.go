@@ -58,7 +58,18 @@ func BuildEngine(cfg config.EventsConfig, logger *slog.Logger, opts ...Option) (
 		rules = append(rules, rule)
 		managers = append(managers, ruleManagers...)
 	}
-	return NewEngine(rules, logger), managers, nil
+	eng := NewEngine(rules, logger)
+	// Unset (0) is the default; a negative threshold disables the guard.
+	switch {
+	case cfg.RTRBulkThreshold > 0:
+		eng.SetRTRBulkThreshold(cfg.RTRBulkThreshold)
+	case cfg.RTRBulkThreshold < 0:
+		eng.SetRTRBulkThreshold(0)
+		logger.Warn("RTR bulk guard disabled (events.rtr-bulk-threshold is negative): "+
+			"an RTR update that changes many routes fires every per-route action, FlowSpec included",
+			"rtr_bulk_threshold", cfg.RTRBulkThreshold)
+	}
+	return eng, managers, nil
 }
 
 func buildRule(rc config.RuleConfig, logger *slog.Logger, o *buildOptions) (*Rule, []*flowspec.Manager, error) {
@@ -154,6 +165,20 @@ func buildTrigger(tc config.TriggerConfig) (Trigger, error) {
 
 	case "cache_unhealthy":
 		return &CacheUnhealthyTrigger{}, nil
+
+	case "source":
+		if len(tc.Sources) == 0 {
+			return nil, fmt.Errorf("source trigger requires at least one source")
+		}
+		for _, src := range tc.Sources {
+			if src != SourceBMP && src != SourceRTR {
+				return nil, fmt.Errorf("source trigger: unknown source %q (want %q or %q)", src, SourceBMP, SourceRTR)
+			}
+		}
+		return &SourceTrigger{Sources: tc.Sources}, nil
+
+	case "rtr_bulk_change":
+		return &RTRBulkChangeTrigger{}, nil
 
 	case "rib":
 		if len(tc.RIBs) == 0 {

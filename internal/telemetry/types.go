@@ -57,6 +57,12 @@ const (
 	DisconnectReasonError          DisconnectReason = "error"           // any other read, write or protocol error; error_text says which
 )
 
+// DisconnectReasons lists every DisconnectReason, for metric labels.
+var DisconnectReasons = []DisconnectReason{
+	DisconnectReasonEOF, DisconnectReasonReset, DisconnectReasonErrorReport, DisconnectReasonTimeout,
+	DisconnectReasonShutdown, DisconnectReasonVersionUpgrade, DisconnectReasonError,
+}
+
 // Why the client lowered the RTR version (version_downgrade events).
 const (
 	DowngradeReasonUnsupportedVersion = "unsupported_version" // Error Report code 4

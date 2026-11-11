@@ -30,6 +30,7 @@ import (
 	"github.com/nokia/bgp-routing-security-monitor/internal/rtr"
 	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store"
 	"github.com/nokia/bgp-routing-security-monitor/internal/snapshot"
+	"github.com/nokia/bgp-routing-security-monitor/internal/telemetry"
 	"github.com/nokia/bgp-routing-security-monitor/internal/types"
 	"github.com/nokia/bgp-routing-security-monitor/internal/validation"
 	"github.com/nokia/bgp-routing-security-monitor/internal/validation/aspa"
@@ -94,6 +95,13 @@ type Server struct {
 	// there are none. Guarded by deltaMu: RTR goroutines add to it.
 	deltaMu      sync.Mutex
 	pendingDelta *store.Delta
+	// pendingUpdates are the RTR updates whose deltas pendingDelta merges,
+	// for the pass's events (cache and serial). Guarded by deltaMu.
+	pendingUpdates []rtrUpdate
+	// rtrBatch collects the event-engine side of the revalidation pass in
+	// progress (see publishChange); nil without an event engine. Owned by
+	// ingestLoop.
+	rtrBatch *events.RTRBatch
 	// Owned by ingestLoop: the revalidation pass in progress, and whether
 	// another was requested after it started and must follow it.
 	revalidation    *validation.Revalidation
@@ -114,6 +122,13 @@ type Server struct {
 	testAfterChunk func()
 	// testEmitted, if set, sees each event emitted to the event engine.
 	testEmitted func(events.Event)
+
+	// listening is closed once Run has bound its listeners; bmpAddr and
+	// apiAddr are then their addresses (apiAddr nil if the API failed to
+	// bind).
+	listening chan struct{}
+	bmpAddr   net.Addr
+	apiAddr   net.Addr
 }
 
 // emitEvent hands ev to the event engine.
@@ -198,6 +213,7 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 		retired:      make(map[uint64]int),
 		revalidateCh: make(chan struct{}, 1),
 		evictCh:      make(chan struct{}, 1),
+		listening:    make(chan struct{}),
 	}
 
 	// Existing API server
@@ -224,7 +240,15 @@ func (s *Server) SetDemoMode(enabled bool) {
 
 // Run starts all subsystems and blocks until interrupted.
 func (s *Server) Run() error {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return s.RunContext(ctx)
+}
+
+// RunContext starts all subsystems and blocks until ctx is done (or the BMP
+// listener fails), then shuts down as Run does on a signal.
+func (s *Server) RunContext(parent context.Context) error {
+	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
 	// Build event engine before starting any goroutines so that ingestLoop
@@ -260,6 +284,8 @@ func (s *Server) Run() error {
 		if err != nil {
 			return fmt.Errorf("event engine: %w", err)
 		}
+		s.log.Info("event engine built", "rules", len(s.cfg.Events.Rules),
+			"rtr_bulk_threshold", s.cfg.Events.RTRBulkThreshold)
 		s.eventEngine = eng
 		s.fsManagers = mgrs
 	}
@@ -556,8 +582,24 @@ func (s *Server) ingestLoop(ctx context.Context) {
 // completed sync records the cache as synced; only a sync that changed the
 // VRP or ASPA data requests a revalidation pass, so a refresh poll that finds
 // the cache's serial unchanged costs no pass over the table.
+//
+// Every session end counts in raven_rtr_disconnects_total with its reason,
+// and marks the cache disconnected for StateReader (the OTel
+// raven.rtr.session.state gauge) at once: it used to stay connected until
+// the client stopped.
 func (s *Server) wireRTRClient(client *rtr.Client, addr string) {
-	client.SetOnUpdate(s.RequestRevalidationDelta)
+	client.SetOnUpdate(func(d *store.Delta) {
+		s.requestRTRUpdate(rtrUpdate{cache: addr, serial: client.Serial()}, d)
+	})
+	for _, reason := range telemetry.DisconnectReasons {
+		metrics.RTRDisconnectsTotal.WithLabelValues(addr, string(reason))
+	}
+	client.SetOnDisconnect(func(reason telemetry.DisconnectReason) {
+		s.rtrMu.Lock()
+		s.rtrStates[addr] = 0
+		s.rtrMu.Unlock()
+		metrics.RTRDisconnectsTotal.WithLabelValues(addr, string(reason)).Inc()
+	})
 	client.SetOnSync(func() {
 		// Last-sync time for StateReader/OTel.
 		s.rtrMu.Lock()
@@ -617,6 +659,12 @@ func (s *Server) RequestRevalidation() {
 // delta can affect (all of them, for a Full delta). Deltas requested before a
 // pass takes them are merged. Safe from any goroutine, and never blocks.
 func (s *Server) RequestRevalidationDelta(d *store.Delta) {
+	s.requestRTRUpdate(rtrUpdate{}, d)
+}
+
+// requestRTRUpdate is RequestRevalidationDelta for an RTR update from a
+// known cache and serial, which the pass's events report.
+func (s *Server) requestRTRUpdate(u rtrUpdate, d *store.Delta) {
 	if d == nil {
 		d = store.FullDelta()
 	}
@@ -628,6 +676,7 @@ func (s *Server) RequestRevalidationDelta(d *store.Delta) {
 		s.pendingDelta = &store.Delta{}
 	}
 	s.pendingDelta.Merge(d)
+	s.pendingUpdates = append(s.pendingUpdates, u)
 	s.deltaMu.Unlock()
 	select {
 	case s.revalidateCh <- struct{}{}:
@@ -662,32 +711,34 @@ func (s *Server) startRevalidation() {
 		return
 	}
 	s.deltaMu.Lock()
-	d := s.pendingDelta
-	s.pendingDelta = nil
+	d, updates := s.pendingDelta, s.pendingUpdates
+	s.pendingDelta, s.pendingUpdates = nil, nil
 	s.deltaMu.Unlock()
 	if d == nil {
 		s.revalidating.Store(false)
 		return
 	}
 	s.revalidateStart = time.Now()
+	s.startRTRBatch(updates)
 	s.revalidation = s.engine.NewDeltaRevalidation(d)
 	s.revalidation.OnChange = s.notifyRevalidated
 	s.revalidating.Store(true)
 }
 
-// notifyRevalidated tells watch subscribers about a route an RTR-driven
-// revalidation pass replaced, as ingest does for a BMP route, if its posture,
-// ROV state or ASPA state changed. A pass also replaces a route whose
-// results changed only in detail (another matching VRP, a new reason); that
-// is not a change a watcher is shown. NotifyRoute never blocks: a watcher
-// whose buffer is full misses the event, so a pass that changes many routes
-// cannot hold up ingestLoop.
+// notifyRevalidated publishes a route an RTR-driven revalidation pass
+// replaced (see publishChange), as ingest does for a BMP route, if its
+// posture, ROV state or ASPA state changed. A pass also replaces a route
+// whose results changed only in detail (another matching VRP, a new reason);
+// that is not a change watchers or rules are shown. Nothing here blocks: a
+// watcher whose buffer is full misses the event, and event-engine events
+// wait in the pass's batch, so a pass that changes many routes cannot hold
+// up ingestLoop.
 func (s *Server) notifyRevalidated(old, updated *types.Route) {
 	if old.SecurityPosture == updated.SecurityPosture &&
 		old.ROV.State == updated.ROV.State && old.ASPA.State == updated.ASPA.State {
 		return
 	}
-	s.apiSrv.NotifyRoute(updated)
+	s.publishChange(old, updated, metrics.SourceRTR)
 }
 
 func (s *Server) backgroundPending() bool {
@@ -729,6 +780,7 @@ func (s *Server) stepRevalidation() {
 	metrics.RevalidationDuration.WithLabelValues(mode).Observe(took.Seconds())
 	metrics.RevalidationRoutesTotal.WithLabelValues(mode, metrics.RevalidationResultChecked).Add(float64(rv.Checked))
 	metrics.RevalidationRoutesTotal.WithLabelValues(mode, metrics.RevalidationResultChanged).Add(float64(rv.Changed))
+	s.flushRTRBatch()
 	s.revalidation = nil
 	s.revalidationPasses.Add(1)
 	if s.revalidateAgain {
@@ -801,14 +853,12 @@ func (s *Server) stepRemovals() {
 func (s *Server) ingestRoute(r types.Route, session, count uint64) {
 	r.OwnerSession = session
 
-	// Capture old posture before overwriting so we can classify the event.
-	// If the existing route is Stale (snapshot artefact), treat the
-	// incoming live BMP message as a fresh insert → EventTypeNewRoute.
-	var oldPosture types.SecurityPosture
-	if s.eventEngine != nil {
-		if old := s.table.Get(r.Key()); old != nil && !old.Stale {
-			oldPosture = old.SecurityPosture
-		}
+	// The route as the table holds it, to tell what the announcement
+	// changes. A Stale one (a snapshot artefact) counts as not there: the
+	// live announcement is a new route.
+	old := s.table.Get(r.Key())
+	if old != nil && old.Stale {
+		old = nil
 	}
 
 	// Run ROV validation before inserting
@@ -818,26 +868,10 @@ func (s *Server) ingestRoute(r types.Route, session, count uint64) {
 
 	s.table.Insert(&r)
 
-	// Notify watch subscribers
-	s.apiSrv.NotifyRoute(&r)
-
-	// Emit to the event engine for active-response rule evaluation. Not
-	// for Adj-RIB-Out routes: the rules (and their actions, FlowSpec
-	// mitigation included) are about routes the router receives.
-	if s.eventEngine != nil && !r.RIBType.IsAdjRIBOut() {
-		eventType := events.EventTypeNewRoute
-		if oldPosture != "" {
-			eventType = events.EventTypePostureChange
-		}
-		s.emitEvent(events.Event{
-			ID:         events.NewID(),
-			Timestamp:  r.Timestamp,
-			Type:       eventType,
-			Route:      &r,
-			OldPosture: oldPosture,
-			NewPosture: r.SecurityPosture,
-			RouterID:   r.Router.String(), // the monitored router, not the peer's BGP ID
-		})
+	// Watch, metrics and the event engine see the change, if it is one: a
+	// re-announcement that changes nothing is not.
+	if old == nil || !sameRoute(old, &r) {
+		s.publishChange(old, &r, metrics.SourceBMP)
 	}
 
 	// Log first few routes so the user sees it working
@@ -889,6 +923,7 @@ func (s *Server) ingestWithdrawal(w types.Withdrawal, session uint64) {
 			Route:      withdrawn,
 			OldPosture: withdrawn.SecurityPosture,
 			RouterID:   w.Router.String(), // the monitored router; it was the peer's address
+			Source:     events.SourceBMP,
 		})
 	}
 }
@@ -1007,10 +1042,13 @@ func (s *Server) bindListeners(ctx context.Context, wg *sync.WaitGroup) error {
 	if err != nil {
 		return err
 	}
+	s.bmpAddr = bmpAddr
+	defer close(s.listening)
 	listeners := []any{"bmp", bmpAddr.String()}
 	if ln, err := net.Listen("tcp", APIListen(s.cfg)); err != nil {
 		s.log.Error("API server failed", "addr", APIListen(s.cfg), "error", err)
 	} else {
+		s.apiAddr = ln.Addr()
 		listeners = append(listeners, "api", ln.Addr().String())
 		wg.Add(1)
 		go func() {

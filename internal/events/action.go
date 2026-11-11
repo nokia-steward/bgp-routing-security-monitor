@@ -28,6 +28,22 @@ type Action interface {
 	Execute(ctx context.Context, event Event) error
 }
 
+// notification is an Action that only tells someone about an event, with
+// no effect on the network: the only kind an rtr_bulk_change event reaches.
+type notification interface {
+	Action
+	notification()
+}
+
+// isNotification reports whether a is a notification action (webhook, log).
+func isNotification(a Action) bool {
+	_, ok := a.(notification)
+	return ok
+}
+
+func (a *LogAction) notification()     {}
+func (a *WebhookAction) notification() {}
+
 // LogAction writes the event as structured key-value pairs to slog at a
 // configured level. It is the fallback action and the default dead-letter sink.
 type LogAction struct {
@@ -60,6 +76,14 @@ func (a *LogAction) Execute(ctx context.Context, event Event) error {
 		"new_posture", event.NewPosture,
 		"cache_name", event.CacheName,
 		"router_id", event.RouterID,
+		"source", event.Source,
+	}
+	if b := event.Bulk; b != nil {
+		args = append(args, "serial", event.Serial, "suppressed", b.Suppressed,
+			"changes", b.Changes.Routes, "changes_transitions", b.Changes.Transitions,
+			"changes_sample_prefixes", b.Changes.SamplePrefixes,
+			"matched", b.Matched.Routes, "matched_transitions", b.Matched.Transitions,
+			"matched_sample_prefixes", b.Matched.SamplePrefixes)
 	}
 	// Only present when the rule includes a global-correlate action, so
 	// existing log output is byte-for-byte unchanged without one.
@@ -112,6 +136,31 @@ type webhookPayload struct {
 	// GlobalVisibility is present only when the rule includes a
 	// global-correlate action. Existing consumers see no change.
 	GlobalVisibility *external.GlobalVisibilityResult `json:"global_visibility,omitempty"`
+	// Source is what produced the change: "bmp" or "rtr" (omitted for
+	// events about neither, such as cache_unhealthy). Serial is the RTR
+	// cache's serial on RTR-driven events.
+	Source string `json:"source,omitempty"`
+	Serial uint32 `json:"serial,omitempty"`
+	// Bulk is set on rtr_bulk_change events only.
+	Bulk *bulkPayload `json:"bulk,omitempty"`
+}
+
+// bulkPayload is an rtr_bulk_change event's summary in a webhook payload.
+type bulkPayload struct {
+	Threshold  int               `json:"threshold"`
+	Suppressed bool              `json:"suppressed"`
+	Changes    bulkCountsPayload `json:"changes"`
+	Matched    bulkCountsPayload `json:"matched"`
+}
+
+type bulkCountsPayload struct {
+	Routes         int            `json:"routes"`
+	Transitions    map[string]int `json:"transitions"`
+	SamplePrefixes []string       `json:"sample_prefixes"`
+}
+
+func countsPayload(c BulkCounts) bulkCountsPayload {
+	return bulkCountsPayload(c)
 }
 
 // WebhookAction delivers the event payload to an HTTP endpoint.
@@ -252,8 +301,14 @@ func (a *WebhookAction) buildPayload(event Event) webhookPayload {
 		OldPosture: string(event.OldPosture),
 		NewPosture: string(event.NewPosture),
 		CacheName:  event.CacheName,
+		Source:     event.Source,
+		Serial:     event.Serial,
 
 		GlobalVisibility: event.GlobalVisibility,
+	}
+	if b := event.Bulk; b != nil {
+		p.Bulk = &bulkPayload{Threshold: b.Threshold, Suppressed: b.Suppressed,
+			Changes: countsPayload(b.Changes), Matched: countsPayload(b.Matched)}
 	}
 	if event.Route != nil {
 		p.Prefix = event.Route.Prefix.String()
@@ -308,8 +363,11 @@ func (a *FlowspecAction) Name() string { return "flowspec" }
 
 // Execute builds a FlowspecRule from the event and calls manager.Inject.
 // ErrDuplicate is treated as steady-state and not propagated.
+//
+// An rtr_bulk_change event never gets here (Rule.fire keeps it to
+// notification actions); if one did, it has no route and injects nothing.
 func (a *FlowspecAction) Execute(ctx context.Context, event Event) error {
-	if event.Route == nil {
+	if event.Route == nil || event.Type == EventTypeRTRBulkChange {
 		return nil
 	}
 

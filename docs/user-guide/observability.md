@@ -142,7 +142,34 @@ raven_rtr_last_sync_seconds{cache="localhost:3323"}           # Unix time of the
 raven_rtr_last_serial_change_seconds{cache="localhost:3323"}  # Unix time of the last sync that changed the serial
 raven_rtr_data_expired{cache="localhost:3323"}                # 1 if no sync completed within the Expire Interval
 raven_rtr_protocol_version{cache="localhost:3323"}            # Negotiated RTR version (ASPA needs 2)
+raven_rtr_disconnects_total{cache="localhost:3323", reason="eof"}  # RTR sessions that ended, by reason
 ```
+
+`reason` is the same set `raven rtr monitor` writes as `disconnect_reason`:
+`eof` (the cache closed the connection), `reset` (connection reset),
+`error_report` (the cache sent an Error Report), `timeout` (no answer within
+the Retry Interval, or a TCP timeout), `shutdown`, `version_upgrade` (a
+re-probe found the configured version) and `error` (any other failure).
+The OpenTelemetry gauge `raven.rtr.session.state` now drops to 0 as soon as a
+session ends, as `raven_rtr_session_state` already did; it used to stay 1
+until the client stopped.
+
+**Route changes and watch:**
+
+```text
+raven_route_posture_changes_total{source="rtr", from="origin-only", to="origin-invalid"}
+raven_watch_events_dropped_total                              # watch events dropped: a watcher not reading fast enough
+raven_events_rtr_bulk_changes_total                           # RTR updates reported as one rtr_bulk_change event
+raven_events_rtr_bulk_suppressed_actions_total                # per-route event actions the bulk guard did not run
+```
+
+`raven_route_posture_changes_total` counts posture transitions of routes
+already in the table, by what caused them: `bmp` (an announcement) or `rtr`
+(revalidation after an RTR update). A new route is not a transition. A
+`raven watch` client that stops reading loses events once its buffer (1024
+events) is full; each one counts in `raven_watch_events_dropped_total`, and
+RAVEN logs once when a watcher starts dropping and once when it catches up.
+See [RTR bulk guard](configuration.md#rtr-bulk-guard) for the bulk metrics.
 
 #### ASPA verification
 
@@ -279,7 +306,8 @@ startup, so an alert can tell "none yet" from "not exported":
 `raven_bmp_rejected_connections_total`, `raven_revalidation_duration_seconds`,
 `raven_revalidation_routes_total`, `raven_aspa_validations_total`,
 `raven_bmp_malformed_updates_total` (every action and reason pair it can
-carry), the
+carry), `raven_route_posture_changes_total` (every source and posture pair),
+`raven_rtr_disconnects_total` (every reason, per configured cache), the
 `raven_global_check_*` counters once a provider is enabled, and
 `raven_rtr_anomaly_total` per cache in `raven rtr monitor`.
 `raven_bmp_unsupported_nlri_total` appears only once an unsupported family

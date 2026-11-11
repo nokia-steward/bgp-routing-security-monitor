@@ -9,9 +9,11 @@ import (
 	"net/netip"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nokia/bgp-routing-security-monitor/internal/bmp"
+	"github.com/nokia/bgp-routing-security-monitor/internal/metrics"
 	"github.com/nokia/bgp-routing-security-monitor/internal/routetable"
 	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store"
 	"github.com/nokia/bgp-routing-security-monitor/internal/types"
@@ -67,6 +69,9 @@ type RouteResponse struct {
 	// Timestamp is when the route was received (types.Route.Timestamp),
 	// RFC 3339 in UTC; "" if unknown.
 	Timestamp string `json:"timestamp"`
+	// Source, on watch events only, is what changed the route: "bmp" (an
+	// announcement) or "rtr" (revalidation after an RTR update).
+	Source string `json:"source,omitempty"`
 }
 
 // VRPResponse is one VRP in API output.
@@ -207,7 +212,23 @@ type Server struct {
 
 	// Watch subscribers
 	watchMu   sync.RWMutex
-	watchSubs map[chan RouteResponse]*routeFilter // each watcher's filter
+	watchSubs map[chan RouteResponse]*watcher
+}
+
+// watchBuffer is how many events a watcher's buffer holds. A revalidation
+// pass after one RTR update notifies its changes back to back, so the buffer
+// takes a burst well past events.rtr-bulk-threshold's default (100) from a
+// watcher that is reading; beyond it events are dropped and counted.
+const watchBuffer = 1024
+
+// watcher is one watch subscriber: its filter, and whether its buffer is
+// overflowing (events being dropped) and how many it has dropped in the
+// current overflow episode. NotifyRoute updates the counts under the read
+// lock, hence the atomics.
+type watcher struct {
+	filter      routeFilter
+	overflowing atomic.Bool
+	dropped     atomic.Uint64
 }
 
 // peerLister lists the BMP peers.
@@ -223,7 +244,7 @@ func NewServer(table *routetable.Table, bmpListen *bmp.Listener, vrpStore *store
 		log:       log.With("subsystem", "api"),
 		version:   version,
 		startTime: time.Now(),
-		watchSubs: make(map[chan RouteResponse]*routeFilter),
+		watchSubs: make(map[chan RouteResponse]*watcher),
 		mux:       http.NewServeMux(),
 	}
 	if bmpListen != nil {
@@ -241,7 +262,14 @@ func NewServer(table *routetable.Table, bmpListen *bmp.Listener, vrpStore *store
 }
 
 // NotifyRoute sends a route to all watch subscribers.
-func (s *Server) NotifyRoute(route *types.Route) {
+func (s *Server) NotifyRoute(route *types.Route) { s.NotifyRouteFrom(route, "") }
+
+// NotifyRouteFrom sends a route to all watch subscribers, with the source of
+// its change ("bmp" or "rtr", the event's source field). It never blocks: a
+// subscriber whose buffer is full misses the event, which
+// raven_watch_events_dropped_total counts; it is logged once when the
+// subscriber starts dropping and once when it catches up.
+func (s *Server) NotifyRouteFrom(route *types.Route, source string) {
 	s.watchMu.RLock()
 	defer s.watchMu.RUnlock()
 	if len(s.watchSubs) == 0 {
@@ -249,17 +277,26 @@ func (s *Server) NotifyRoute(route *types.Route) {
 	}
 	var rr RouteResponse
 	built := false
-	for ch, f := range s.watchSubs {
-		if !f.match(route) {
+	for ch, w := range s.watchSubs {
+		if !w.filter.match(route) {
 			continue
 		}
 		if !built {
 			rr, built = s.routeResponse(route, s.routerName(route.Router)), true
+			rr.Source = source
 		}
 		select {
 		case ch <- rr:
+			if w.overflowing.Load() && w.overflowing.CompareAndSwap(true, false) {
+				s.log.Info("watch subscriber caught up", "dropped", w.dropped.Swap(0))
+			}
 		default:
-			// subscriber too slow, skip
+			metrics.WatchEventsDroppedTotal.Inc()
+			w.dropped.Add(1)
+			if w.overflowing.CompareAndSwap(false, true) {
+				s.log.Warn("watch subscriber is not reading fast enough; dropping its events until it catches up",
+					"buffer", cap(ch))
+			}
 		}
 	}
 }
@@ -456,15 +493,19 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	ch := make(chan RouteResponse, 100)
+	ch := make(chan RouteResponse, watchBuffer)
 	s.watchMu.Lock()
-	s.watchSubs[ch] = &f
+	sub := &watcher{filter: f}
+	s.watchSubs[ch] = sub
 	s.watchMu.Unlock()
 
 	defer func() {
 		s.watchMu.Lock()
 		delete(s.watchSubs, ch)
 		s.watchMu.Unlock()
+		if sub.overflowing.Load() {
+			s.log.Info("watch subscriber left while dropping events", "dropped", sub.dropped.Load())
+		}
 	}()
 	// Send the headers now: until the first event the client would
 	// otherwise not know the watch had started.
