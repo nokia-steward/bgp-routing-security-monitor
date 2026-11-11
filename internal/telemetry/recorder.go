@@ -53,7 +53,8 @@ func (r *Recorder) Events() <-chan SessionEvent {
 
 // Record writes ev as an NDJSON line and performs a non-blocking send on the
 // event channel. It is safe to call on a nil Recorder (no-op). If ev.Timestamp
-// is the zero value it is stamped with the current time.
+// is the zero value it is stamped with the current time. Timestamps are
+// written in UTC.
 func (r *Recorder) Record(ev SessionEvent) {
 	if r == nil {
 		return
@@ -61,6 +62,8 @@ func (r *Recorder) Record(ev SessionEvent) {
 	if ev.Timestamp.IsZero() {
 		ev.Timestamp = time.Now()
 	}
+	ev.Timestamp = ev.Timestamp.UTC()
+	ev.SchemaVersion = NDJSONSchemaVersion
 
 	r.mu.Lock()
 	if err := r.enc.Encode(ev); err != nil {
@@ -80,14 +83,16 @@ func (r *Recorder) Record(ev SessionEvent) {
 // anomalyRecord is the NDJSON form of a detected anomaly, written to the same
 // sink as SessionEvent. event_type is always "anomaly".
 type anomalyRecord struct {
-	Timestamp time.Time          `json:"timestamp"`
-	Cache     string             `json:"cache"`
-	EventType string             `json:"event_type"`
-	Category  string             `json:"category"`
-	Trigger   string             `json:"trigger"`
-	Severity  string             `json:"severity"`
-	ZScores   map[string]float64 `json:"z_scores,omitempty"`
-	Raw       map[string]float64 `json:"raw,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
+	Cache     string    `json:"cache"`
+	EventType string    `json:"event_type"`
+	// SchemaVersion is NDJSONSchemaVersion.
+	SchemaVersion int                `json:"schema_version"`
+	Category      string             `json:"category"`
+	Trigger       string             `json:"trigger"`
+	Severity      string             `json:"severity"`
+	ZScores       map[string]float64 `json:"z_scores,omitempty"`
+	Raw           map[string]float64 `json:"raw,omitempty"`
 }
 
 // RecordAnomaly writes ev as an NDJSON "anomaly" record to the same sink as
@@ -100,14 +105,15 @@ func (r *Recorder) RecordAnomaly(ev *AnomalyEvent) {
 		return
 	}
 	rec := anomalyRecord{
-		Timestamp: ev.Timestamp,
-		Cache:     ev.Cache,
-		EventType: "anomaly",
-		Category:  ev.Category,
-		Trigger:   anomalyTrigger(ev),
-		Severity:  ev.Severity,
-		ZScores:   ev.ZScores,
-		Raw:       ev.Raw,
+		Timestamp:     ev.Timestamp.UTC(),
+		Cache:         ev.Cache,
+		EventType:     "anomaly",
+		SchemaVersion: NDJSONSchemaVersion,
+		Category:      ev.Category,
+		Trigger:       anomalyTrigger(ev),
+		Severity:      ev.Severity,
+		ZScores:       ev.ZScores,
+		Raw:           ev.Raw,
 	}
 
 	r.mu.Lock()

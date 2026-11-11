@@ -5,6 +5,16 @@ All notable changes to RAVEN are recorded here.
 ## Unreleased
 
 ### Added
+- `schema_version` (integer, `1`) on every record `raven rtr monitor` writes
+  to its NDJSON, and a documented contract for that output: the reference
+  page `docs/reference/telemetry-ndjson.md` (every record
+  type, field, unit and enum, with examples) and the JSON Schema
+  `schema/rtr-monitor-ndjson.v1.json`. Within a schema version changes are
+  additive only, and consumers must ignore unknown fields and record types;
+  removing, renaming or retyping anything needs a new version, announced
+  here a release ahead. A test checks every record type the monitor writes
+  against the schema, so code and contract cannot drift. Additive: no
+  existing field changed.
 - RTR-driven posture changes reach the event engine. A route an RTR update
   makes Invalid, NotFound or path-suspect now fires webhook, FlowSpec and log
   rules; before, only `raven watch` was told. BMP-driven and RTR-driven
@@ -116,6 +126,16 @@ All notable changes to RAVEN are recorded here.
   query the client sent.
 
 ### Changed
+- `raven rtr monitor` NDJSON timestamps are written in UTC (`...Z`), not in
+  the host's local time zone. They remain RFC 3339 with nanoseconds and an
+  offset, which consumers must honor; files from older releases may carry a
+  local offset.
+- `raven rtr monitor` NDJSON `sync` records always carry `serial`,
+  `vrp_total`, `vrp_announced`, `vrp_withdrawn`, `aspa_total`,
+  `aspa_announced`, `aspa_withdrawn` and `sync_duration_ns`, 0 included;
+  they used to leave them out when 0 (in older files an absent one means 0).
+  `interval_since_ns` is still absent on the first sync. Additive: every
+  field keeps its name and type.
 - Identical BMP re-announcements no longer emit events: a re-announcement
   that changes nothing about a route (same attributes, same validation
   result) sends neither a `raven watch` event nor a `posture_change` event
