@@ -1093,6 +1093,8 @@ func (s *Server) newRTRClient(cache config.RTRCacheConfig, expireOverride uint32
 	}
 	var configVersion uint8
 	switch s.cfg.RTR.RTRVersion {
+	case "0":
+		configVersion = 0
 	case "1":
 		configVersion = 1
 	default: // "2", "auto", ""

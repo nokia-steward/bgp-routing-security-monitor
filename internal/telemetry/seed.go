@@ -72,14 +72,7 @@ func SeedBaseline(r io.Reader) (*Detector, *SeedSummary, error) {
 
 		// Absent JSON fields unmarshal to zero, matching the live path's
 		// "default optional metrics to 0" convention.
-		detector.ObserveSync(ev.Cache, ev.Timestamp, map[string]float64{
-			MetricIntervalSince: float64(ev.IntervalSince),
-			MetricSyncDuration:  float64(ev.SyncDuration),
-			MetricVRPAnnounced:  float64(ev.VRPAnnounced),
-			MetricVRPWithdrawn:  float64(ev.VRPWithdrawn),
-			MetricASPAAnnounced: float64(ev.ASPAAnnounced),
-			MetricASPAWithdrawn: float64(ev.ASPAWithdrawn),
-		})
+		detector.ObserveSyncTotals(ev.Cache, ev.Timestamp, SyncMetrics(ev), TotalsOf(ev))
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, nil, fmt.Errorf("read input: %w", err)

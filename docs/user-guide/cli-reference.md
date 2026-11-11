@@ -1316,6 +1316,7 @@ Runs in the foreground until you press Ctrl+C.
 | `--cache` | `localhost:3323` | RTR cache address |
 | `--log-file` | `rtr-telemetry.ndjson` | Path to the NDJSON telemetry output file (created if absent, appended if present) |
 | `--transport` | `tcp` | RTR transport: `tcp` or `tls` |
+| `--rtr-version` | `auto` | RTR protocol version. `auto` starts at 2 and falls back one version at a time (2, 1, 0) when the cache rejects one with Error Report code 4 or closes the connection before answering; `0`, `1` or `2` pins the session to that version, with no fallback and no re-probe |
 | `--prometheus` | — | Prometheus listen address (e.g. `:9595`); empty disables the metrics endpoint |
 | `--anomaly-snapshot` | `~/.raven/anomaly-baseline.json` | Path to the adaptive anomaly-detector baseline snapshot (JSON) |
 
