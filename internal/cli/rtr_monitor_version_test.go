@@ -28,6 +28,14 @@ type monitorRun struct {
 // not nil, runs on the client before it starts.
 func runMonitor(t *testing.T, srv *rtrtest.Server, rtrVersion string, configure func(*rtr.Client)) *monitorRun {
 	t.Helper()
+	return runMonitorWith(t, srv, rtrVersion, configure, telemetry.NewDetector(telemetry.DefaultAnomalyConfig()))
+}
+
+// runMonitorWith is runMonitor with the given anomaly detector (one with a
+// warm baseline, say).
+func runMonitorWith(t *testing.T, srv *rtrtest.Server, rtrVersion string, configure func(*rtr.Client),
+	detector *telemetry.Detector) *monitorRun {
+	t.Helper()
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	m := &monitorRun{srv: srv, ndjson: &lockedBuffer{}}
 	rec := telemetry.NewRecorder(m.ndjson, 64, quiet)
@@ -44,7 +52,7 @@ func runMonitor(t *testing.T, srv *rtrtest.Server, rtrVersion string, configure 
 	consumed := make(chan struct{})
 	go func() {
 		defer close(consumed)
-		consumeRTREvents(rec, telemetry.NewDetector(telemetry.DefaultAnomalyConfig()), nil, quiet)
+		consumeRTREvents(rec, detector, nil, quiet)
 	}()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

@@ -1,0 +1,666 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/nokia-steward/bgp-routing-security-monitor/blob/main/schema/rtr-monitor-ndjson.v1.json",
+  "title": "raven rtr monitor NDJSON, schema_version 1",
+  "description": "One NDJSON line: one record. The record type is event_type. See docs/reference/telemetry-ndjson.md. Within schema_version 1 changes are additive only; consumers must ignore fields and record types they do not know. This schema lists exactly what version 1 emits, and is strict (additionalProperties false) so that RAVEN's own tests catch drift: a consumer validating with it must allow for additions.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/connected"
+    },
+    {
+      "$ref": "#/$defs/disconnected"
+    },
+    {
+      "$ref": "#/$defs/sync"
+    },
+    {
+      "$ref": "#/$defs/reset"
+    },
+    {
+      "$ref": "#/$defs/error"
+    },
+    {
+      "$ref": "#/$defs/cache_not_ready"
+    },
+    {
+      "$ref": "#/$defs/version_downgrade"
+    },
+    {
+      "$ref": "#/$defs/anomaly"
+    }
+  ],
+  "$defs": {
+    "connected": {
+      "type": "object",
+      "description": "A TCP (or TLS) connection to the cache was opened and the first query is about to be sent.",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1,
+          "description": "Version of this contract. Records written before it existed have none."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the event happened: RFC 3339 with up to nanosecond precision and a UTC offset, which consumers must honor. RAVEN writes UTC (Z); files from older releases may carry the host's local offset."
+        },
+        "cache": {
+          "type": "string",
+          "description": "The RTR cache, as given to --cache (host:port)."
+        },
+        "event_type": {
+          "const": "connected",
+          "description": "A TCP (or TLS) connection to the cache was opened and the first query is about to be sent."
+        },
+        "proto_version": {
+          "type": "integer",
+          "enum": [
+            0,
+            1,
+            2
+          ],
+          "description": "RTR protocol version of the session (on connected and version_downgrade: the version asked for). 0 carries no ASPA."
+        }
+      },
+      "required": [
+        "schema_version",
+        "timestamp",
+        "cache",
+        "event_type",
+        "proto_version"
+      ],
+      "additionalProperties": false
+    },
+    "disconnected": {
+      "type": "object",
+      "description": "A session that connected has ended. Exactly one per connected.",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1,
+          "description": "Version of this contract. Records written before it existed have none."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the event happened: RFC 3339 with up to nanosecond precision and a UTC offset, which consumers must honor. RAVEN writes UTC (Z); files from older releases may carry the host's local offset."
+        },
+        "cache": {
+          "type": "string",
+          "description": "The RTR cache, as given to --cache (host:port)."
+        },
+        "event_type": {
+          "const": "disconnected",
+          "description": "A session that connected has ended. Exactly one per connected."
+        },
+        "proto_version": {
+          "type": "integer",
+          "enum": [
+            0,
+            1,
+            2
+          ],
+          "description": "RTR protocol version of the session (on connected and version_downgrade: the version asked for). 0 carries no ASPA."
+        },
+        "disconnect_reason": {
+          "type": "string",
+          "enum": [
+            "eof",
+            "reset",
+            "error_report",
+            "timeout",
+            "shutdown",
+            "version_upgrade",
+            "error"
+          ]
+        },
+        "error_code": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "The Error Report's code; present only with disconnect_reason error_report."
+        },
+        "error_text": {
+          "type": "string",
+          "description": "RAVEN's description of the failure; absent on shutdown. Not stable, do not parse."
+        }
+      },
+      "required": [
+        "schema_version",
+        "timestamp",
+        "cache",
+        "event_type",
+        "proto_version",
+        "disconnect_reason"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "disconnect_reason": {
+                "const": "error_report"
+              }
+            },
+            "required": [
+              "disconnect_reason"
+            ]
+          },
+          "then": {
+            "required": [
+              "error_code"
+            ]
+          }
+        }
+      ]
+    },
+    "sync": {
+      "type": "object",
+      "description": "A sync completed: the cache sent End of Data.",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1,
+          "description": "Version of this contract. Records written before it existed have none."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the event happened: RFC 3339 with up to nanosecond precision and a UTC offset, which consumers must honor. RAVEN writes UTC (Z); files from older releases may carry the host's local offset."
+        },
+        "cache": {
+          "type": "string",
+          "description": "The RTR cache, as given to --cache (host:port)."
+        },
+        "event_type": {
+          "const": "sync",
+          "description": "A sync completed: the cache sent End of Data."
+        },
+        "proto_version": {
+          "type": "integer",
+          "enum": [
+            0,
+            1,
+            2
+          ],
+          "description": "RTR protocol version of the session (on connected and version_downgrade: the version asked for). 0 carries no ASPA."
+        },
+        "serial": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "The cache's serial from End of Data. Always present, 0 included (older files omit it when 0)."
+        },
+        "serial_changed": {
+          "type": "boolean",
+          "description": "The serial differs from the previous sync's (true on the first)."
+        },
+        "sync_type": {
+          "type": "string",
+          "enum": [
+            "full",
+            "incremental"
+          ]
+        },
+        "vrp_total": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "VRPs held after the sync (duplicate announcements counted). Always present, 0 included."
+        },
+        "vrp_announced": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "VRP announcement PDUs in this sync. Always present, 0 included."
+        },
+        "vrp_withdrawn": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "VRP withdrawal PDUs in this sync. Always present, 0 included."
+        },
+        "aspa_total": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "ASPA records (customer ASes) held after the sync. Always present, 0 included."
+        },
+        "aspa_announced": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "ASPA announcement PDUs in this sync. Always present, 0 included."
+        },
+        "aspa_withdrawn": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "ASPA withdrawal PDUs in this sync. Always present, 0 included."
+        },
+        "sync_duration_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Nanoseconds from sending the query to receiving End of Data. Always present."
+        },
+        "interval_since_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Nanoseconds since the previous sync's End of Data in this process. Absent on the first sync and when 0."
+        }
+      },
+      "required": [
+        "schema_version",
+        "timestamp",
+        "cache",
+        "event_type",
+        "proto_version",
+        "serial_changed",
+        "sync_type",
+        "serial",
+        "vrp_total",
+        "vrp_announced",
+        "vrp_withdrawn",
+        "aspa_total",
+        "aspa_announced",
+        "aspa_withdrawn",
+        "sync_duration_ns"
+      ],
+      "additionalProperties": false
+    },
+    "reset": {
+      "type": "object",
+      "description": "The cache sent a Cache Reset; a full sync follows.",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1,
+          "description": "Version of this contract. Records written before it existed have none."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the event happened: RFC 3339 with up to nanosecond precision and a UTC offset, which consumers must honor. RAVEN writes UTC (Z); files from older releases may carry the host's local offset."
+        },
+        "cache": {
+          "type": "string",
+          "description": "The RTR cache, as given to --cache (host:port)."
+        },
+        "event_type": {
+          "const": "reset",
+          "description": "The cache sent a Cache Reset; a full sync follows."
+        },
+        "proto_version": {
+          "type": "integer",
+          "enum": [
+            0,
+            1,
+            2
+          ],
+          "description": "RTR protocol version of the session (on connected and version_downgrade: the version asked for). 0 carries no ASPA."
+        },
+        "reset_reason": {
+          "type": "string",
+          "enum": [
+            "cache_reset_pdu"
+          ]
+        }
+      },
+      "required": [
+        "schema_version",
+        "timestamp",
+        "cache",
+        "event_type",
+        "proto_version",
+        "reset_reason"
+      ],
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "description": "The cache sent an Error Report that is a fault: any code but 2, and code 4 on an established session, at version 0 or at a pinned version. The session ends.",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1,
+          "description": "Version of this contract. Records written before it existed have none."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the event happened: RFC 3339 with up to nanosecond precision and a UTC offset, which consumers must honor. RAVEN writes UTC (Z); files from older releases may carry the host's local offset."
+        },
+        "cache": {
+          "type": "string",
+          "description": "The RTR cache, as given to --cache (host:port)."
+        },
+        "event_type": {
+          "const": "error",
+          "description": "The cache sent an Error Report that is a fault: any code but 2, and code 4 on an established session, at version 0 or at a pinned version. The session ends."
+        },
+        "proto_version": {
+          "type": "integer",
+          "enum": [
+            0,
+            1,
+            2
+          ],
+          "description": "RTR protocol version of the session (on connected and version_downgrade: the version asked for). 0 carries no ASPA."
+        },
+        "error_code": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "RFC 8210 §12 Error Report code."
+        },
+        "error_text": {
+          "type": "string",
+          "description": "The cache's error text. Absent when empty."
+        }
+      },
+      "required": [
+        "schema_version",
+        "timestamp",
+        "cache",
+        "event_type",
+        "proto_version",
+        "error_code"
+      ],
+      "additionalProperties": false
+    },
+    "cache_not_ready": {
+      "type": "object",
+      "description": "The cache sent Error Report code 2 (No Data Available): it is still starting. Not a fault; retried at the same version.",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1,
+          "description": "Version of this contract. Records written before it existed have none."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the event happened: RFC 3339 with up to nanosecond precision and a UTC offset, which consumers must honor. RAVEN writes UTC (Z); files from older releases may carry the host's local offset."
+        },
+        "cache": {
+          "type": "string",
+          "description": "The RTR cache, as given to --cache (host:port)."
+        },
+        "event_type": {
+          "const": "cache_not_ready",
+          "description": "The cache sent Error Report code 2 (No Data Available): it is still starting. Not a fault; retried at the same version."
+        },
+        "proto_version": {
+          "type": "integer",
+          "enum": [
+            0,
+            1,
+            2
+          ],
+          "description": "RTR protocol version of the session (on connected and version_downgrade: the version asked for). 0 carries no ASPA."
+        },
+        "error_code": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "RFC 8210 §12 Error Report code.",
+          "const": 2
+        },
+        "error_text": {
+          "type": "string",
+          "description": "The cache's error text. Absent when empty."
+        }
+      },
+      "required": [
+        "schema_version",
+        "timestamp",
+        "cache",
+        "event_type",
+        "proto_version",
+        "error_code"
+      ],
+      "additionalProperties": false
+    },
+    "version_downgrade": {
+      "type": "object",
+      "description": "A version negotiation step: the cache turned down proto_version before answering anything, and the monitor retries at next_proto_version. Not a fault.",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1,
+          "description": "Version of this contract. Records written before it existed have none."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the event happened: RFC 3339 with up to nanosecond precision and a UTC offset, which consumers must honor. RAVEN writes UTC (Z); files from older releases may carry the host's local offset."
+        },
+        "cache": {
+          "type": "string",
+          "description": "The RTR cache, as given to --cache (host:port)."
+        },
+        "event_type": {
+          "const": "version_downgrade",
+          "description": "A version negotiation step: the cache turned down proto_version before answering anything, and the monitor retries at next_proto_version. Not a fault."
+        },
+        "proto_version": {
+          "type": "integer",
+          "enum": [
+            0,
+            1,
+            2
+          ],
+          "description": "RTR protocol version of the session (on connected and version_downgrade: the version asked for). 0 carries no ASPA."
+        },
+        "next_proto_version": {
+          "type": "integer",
+          "enum": [
+            0,
+            1,
+            2
+          ],
+          "description": "The version the monitor retries at."
+        },
+        "downgrade_reason": {
+          "type": "string",
+          "enum": [
+            "unsupported_version",
+            "session_dropped"
+          ]
+        },
+        "error_code": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "4 (Unsupported Protocol Version); with downgrade_reason unsupported_version.",
+          "const": 4
+        },
+        "error_text": {
+          "type": "string",
+          "description": "The cache's error text, with unsupported_version. Absent when empty."
+        },
+        "disconnect_reason": {
+          "type": "string",
+          "enum": [
+            "eof",
+            "reset"
+          ],
+          "description": "How the cache dropped the connection; with downgrade_reason session_dropped."
+        }
+      },
+      "required": [
+        "schema_version",
+        "timestamp",
+        "cache",
+        "event_type",
+        "proto_version",
+        "next_proto_version",
+        "downgrade_reason"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "downgrade_reason": {
+                "const": "unsupported_version"
+              }
+            },
+            "required": [
+              "downgrade_reason"
+            ]
+          },
+          "then": {
+            "required": [
+              "error_code"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "downgrade_reason": {
+                "const": "session_dropped"
+              }
+            },
+            "required": [
+              "downgrade_reason"
+            ]
+          },
+          "then": {
+            "required": [
+              "disconnect_reason"
+            ]
+          }
+        }
+      ]
+    },
+    "anomaly": {
+      "type": "object",
+      "description": "The anomaly detector flagged the previous record (a sync, a reset or an error).",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1,
+          "description": "Version of this contract. Records written before it existed have none."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the event happened: RFC 3339 with up to nanosecond precision and a UTC offset, which consumers must honor. RAVEN writes UTC (Z); files from older releases may carry the host's local offset."
+        },
+        "cache": {
+          "type": "string",
+          "description": "The RTR cache, as given to --cache (host:port)."
+        },
+        "event_type": {
+          "const": "anomaly",
+          "description": "The anomaly detector flagged the previous record (a sync, a reset or an error)."
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "structural",
+            "statistical"
+          ]
+        },
+        "trigger": {
+          "type": "string",
+          "pattern": "^(cache_reset|error_report|(interval_since_ns|sync_duration_ns|vrp_announced|vrp_withdrawn|aspa_announced|aspa_withdrawn)(\\+(interval_since_ns|sync_duration_ns|vrp_announced|vrp_withdrawn|aspa_announced|aspa_withdrawn))*)$",
+          "description": "structural: cache_reset or error_report. statistical: the metric that tripped the hard threshold, or the metrics that crossed the soft threshold joined with + (a correlated trip)."
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "high",
+            "medium"
+          ],
+          "description": "high: structural, or a hard threshold. medium: a correlated trip."
+        },
+        "z_scores": {
+          "type": "object",
+          "description": "Statistical only: modified z (unitless) of each metric at or above its soft threshold.",
+          "propertyNames": {
+            "enum": [
+              "interval_since_ns",
+              "sync_duration_ns",
+              "vrp_announced",
+              "vrp_withdrawn",
+              "aspa_announced",
+              "aspa_withdrawn"
+            ]
+          },
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "raw": {
+          "type": "object",
+          "description": "Statistical only: every metric's value in the sync (ns for *_ns, counts otherwise).",
+          "propertyNames": {
+            "enum": [
+              "interval_since_ns",
+              "sync_duration_ns",
+              "vrp_announced",
+              "vrp_withdrawn",
+              "aspa_announced",
+              "aspa_withdrawn"
+            ]
+          },
+          "additionalProperties": {
+            "type": "number"
+          }
+        }
+      },
+      "required": [
+        "schema_version",
+        "timestamp",
+        "cache",
+        "event_type",
+        "category",
+        "trigger",
+        "severity"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "category": {
+                "const": "statistical"
+              }
+            },
+            "required": [
+              "category"
+            ]
+          },
+          "then": {
+            "required": [
+              "z_scores",
+              "raw"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "category": {
+                "const": "structural"
+              }
+            },
+            "required": [
+              "category"
+            ]
+          },
+          "then": {
+            "properties": {
+              "trigger": {
+                "enum": [
+                  "cache_reset",
+                  "error_report"
+                ]
+              },
+              "severity": {
+                "const": "high"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

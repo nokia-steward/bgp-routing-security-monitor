@@ -275,6 +275,19 @@ func (s *Server) latest() *sessionConn {
 	return s.sessions[len(s.sessions)-1]
 }
 
+// SetMaxVersion changes the highest version the cache speaks, for the
+// queries that follow: a cache upgraded (or downgraded) while clients are
+// connected.
+func (s *Server) SetMaxVersion(v uint8) {
+	s.t.Helper()
+	if v > 2 {
+		s.t.Fatalf("rtrtest: MaxVersion %d: only 0, 1 and 2 exist", v)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg.MaxVersion = v
+}
+
 // Then queues actions for the next queries, one each, in order, in place of
 // the default. A queued action applies whatever the query's version.
 func (s *Server) Then(actions ...Action) {
@@ -334,22 +347,23 @@ func (s *Server) handle(q Query) {
 	s.mu.Lock()
 	s.received = append(s.received, q)
 	var act Action
+	maxVersion := s.cfg.MaxVersion
 	switch {
 	case len(s.script) > 0:
 		act, s.script = s.script[0], s.script[1:]
-	case q.Version > s.cfg.MaxVersion:
+	case q.Version > maxVersion:
 		act = s.cfg.Unsupported
 	default:
 		act = Answer
 	}
 	s.mu.Unlock()
 
-	version := min(q.Version, s.cfg.MaxVersion)
+	version := min(q.Version, maxVersion)
 	switch act.kind {
 	case actAnswer:
 		s.answer(q, version)
 	case actError:
-		ev := s.cfg.MaxVersion
+		ev := maxVersion
 		if s.cfg.ErrorAtQueryVersion {
 			ev = q.Version
 		}

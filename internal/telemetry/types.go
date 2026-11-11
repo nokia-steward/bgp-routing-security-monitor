@@ -1,6 +1,9 @@
 package telemetry
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // SyncType indicates whether a sync cycle was triggered by a Reset Query
 // (full table dump) or a Serial Query (incremental update).
@@ -69,6 +72,13 @@ const (
 	DowngradeReasonSessionDropped     = "session_dropped"     // closed or reset before any response
 )
 
+// NDJSONSchemaVersion is the version of the NDJSON contract (the
+// schema_version field of every record raven rtr monitor writes), documented
+// in docs/reference/telemetry-ndjson.md and schema/rtr-monitor-ndjson.v1.json.
+// Within a version, changes are additive only; removing, renaming or
+// retyping anything needs a new version.
+const NDJSONSchemaVersion = 1
+
 // SessionEvent captures a single RTR session lifecycle or sync event.
 // It is the atomic unit written to the NDJSON log and emitted on the
 // event channel consumed by the anomaly detector.
@@ -76,6 +86,9 @@ type SessionEvent struct {
 	Timestamp time.Time `json:"timestamp"`
 	Cache     string    `json:"cache"`
 	EventType EventType `json:"event_type"`
+	// SchemaVersion is NDJSONSchemaVersion, set by the Recorder on every
+	// record it writes.
+	SchemaVersion int `json:"schema_version"`
 
 	// Sync fields — populated when EventType == EventSync.
 	Serial        uint32        `json:"serial,omitempty"`
@@ -119,4 +132,39 @@ type SessionEvent struct {
 	// EventVersionDowngrade: the version the client retries at, and why.
 	NextProtoVersion *uint8 `json:"next_proto_version,omitempty"`
 	DowngradeReason  string `json:"downgrade_reason,omitempty"`
+}
+
+// MarshalJSON writes the event as its NDJSON record. A sync record carries
+// its serial, counts and duration always, 0 included (the struct tags'
+// omitempty applies to the other record types, which have none of them);
+// interval_since_ns stays absent on the first sync. Older RAVENs omitted
+// these when 0.
+func (e SessionEvent) MarshalJSON() ([]byte, error) {
+	type plain SessionEvent // without this method
+	if e.EventType != EventSync {
+		return json.Marshal(plain(e))
+	}
+	// The outer fields, shallower than the embedded ones of the same name,
+	// are the ones encoded.
+	return json.Marshal(struct {
+		plain
+		Serial        uint32        `json:"serial"`
+		VRPTotal      int           `json:"vrp_total"`
+		VRPAnnounced  int           `json:"vrp_announced"`
+		VRPWithdrawn  int           `json:"vrp_withdrawn"`
+		ASPATotal     int           `json:"aspa_total"`
+		ASPAAnnounced int           `json:"aspa_announced"`
+		ASPAWithdrawn int           `json:"aspa_withdrawn"`
+		SyncDuration  time.Duration `json:"sync_duration_ns"`
+	}{
+		plain:         plain(e),
+		Serial:        e.Serial,
+		VRPTotal:      e.VRPTotal,
+		VRPAnnounced:  e.VRPAnnounced,
+		VRPWithdrawn:  e.VRPWithdrawn,
+		ASPATotal:     e.ASPATotal,
+		ASPAAnnounced: e.ASPAAnnounced,
+		ASPAWithdrawn: e.ASPAWithdrawn,
+		SyncDuration:  e.SyncDuration,
+	})
 }

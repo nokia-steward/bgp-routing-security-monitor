@@ -35,6 +35,9 @@ nav = [
     { "Data Model" = "architecture/data-model.md" },
     { "Validation Engine" = "architecture/validation-engine.md" },
   ] },
+  { "Reference" = [
+    { "Telemetry NDJSON" = "reference/telemetry-ndjson.md" },
+  ] },
   { "Troubleshooting" = "troubleshooting.md" },
   { "Changelog" = "CHANGELOG.md" },
 ]

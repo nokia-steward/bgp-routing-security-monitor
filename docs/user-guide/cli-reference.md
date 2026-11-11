@@ -1307,6 +1307,11 @@ raven rtr monitor --anomaly-snapshot ~/.raven/anomaly-baseline.json --prometheus
 
 Runs in the foreground until you press Ctrl+C.
 
+**Output:** the NDJSON written to `--log-file` is a versioned contract: every
+record type, field and value is documented in
+[Telemetry NDJSON](../reference/telemetry-ndjson.md), with a JSON Schema and
+the compatibility policy. Build parsers against that page.
+
 **Running instance:** [ASPA Explorer](https://aspa.ping6.it/statistics.html#rtr-title), a public service of the Department of Information Engineering at the University of Padova, runs `raven rtr monitor` against its own Routinator and Fort validators and several public RTR servers, and publishes a summary of the telemetry every five minutes (also available as [JSON](https://aspa.ping6.it/api/v1/rtr.json)).
 
 **Flags:**
