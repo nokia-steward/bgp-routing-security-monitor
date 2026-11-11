@@ -21,10 +21,62 @@ import (
 	"github.com/nokia/bgp-routing-security-monitor/internal/telemetry"
 )
 
-// rtrMonitorProtoVersion is the RTR protocol version the monitor starts with.
-// v2 exercises ASPA PDUs (which telemetry records); the client automatically
-// falls back to v1/v0 if the cache rejects it.
+// rtrMonitorProtoVersion is the RTR protocol version the monitor starts with
+// when --rtr-version is auto (the default). v2 exercises ASPA PDUs (which
+// telemetry records); the client falls back to v1, then v0, if the cache
+// rejects it.
 const rtrMonitorProtoVersion uint8 = 2
+
+// parseMonitorRTRVersion reads --rtr-version: "auto" (or empty) negotiates
+// from version 2 down; 0, 1 or 2 pins the session to that version.
+func parseMonitorRTRVersion(s string) (version uint8, pinned bool, err error) {
+	switch s {
+	case "", "auto":
+		return rtrMonitorProtoVersion, false, nil
+	case "0", "1", "2":
+		return s[0] - '0', true, nil
+	default:
+		return 0, false, fmt.Errorf("invalid --rtr-version %q: must be auto, 0, 1 or 2", s)
+	}
+}
+
+// newMonitorClient builds the monitor's RTR client for cache, at the version
+// --rtr-version (rtrVersion) asks for, recording telemetry to rec.
+func newMonitorClient(cache, transport, rtrVersion string, rec *telemetry.Recorder, log *slog.Logger) (*rtr.Client, error) {
+	version, pinned, err := parseMonitorRTRVersion(rtrVersion)
+	if err != nil {
+		return nil, err
+	}
+	// Minimal in-memory stores: NewClient requires them, but this command
+	// performs no validation, so they are never queried. tlsCfg is nil:
+	// NewClient only consults it when transport == "tls", and a nil config
+	// falls back to the system root CA pool.
+	client, err := rtr.NewClient(cache, transport, nil, store.NewVRPStore(), store.NewASPAStore(), version, log)
+	if err != nil {
+		return nil, fmt.Errorf("create RTR client: %w", err)
+	}
+	client.SetVersionPinned(pinned)
+	client.SetTelemetry(rec)
+	return client, nil
+}
+
+// consumeRTREvents feeds every telemetry event from rec to the detector until
+// rec is closed: each anomaly is written as an NDJSON record on the same
+// sink and counted in Prometheus, and observed is called for each sync the
+// baseline took in.
+func consumeRTREvents(rec *telemetry.Recorder, detector *telemetry.Detector, observed func(), log *slog.Logger) {
+	for ev := range rec.Events() {
+		anomaly, ok := observeRTREvent(detector, ev, log)
+		if ok && observed != nil {
+			observed()
+		}
+		if anomaly != nil {
+			rec.RecordAnomaly(anomaly)
+			metrics.RTRAnomalyTotal.WithLabelValues(anomaly.Cache, anomaly.Severity).Inc()
+			metrics.RTRAnomalyLastTimestamp.WithLabelValues(anomaly.Cache).Set(float64(anomaly.Timestamp.Unix()))
+		}
+	}
+}
 
 // rtrMonitorShutdownGrace bounds how long we wait for the RTR client goroutine
 // to unwind after a signal before closing the recorder. It is deliberately
@@ -50,6 +102,7 @@ func newRTRMonitorCmd() *cobra.Command {
 		transport       string
 		prometheus      string
 		anomalySnapshot string
+		rtrVersion      string
 	)
 
 	cmd := &cobra.Command{
@@ -64,6 +117,9 @@ client; no validation or BMP ingestion happens here.`,
 
 			if transport != "tcp" && transport != "tls" {
 				return fmt.Errorf("invalid --transport %q: must be \"tcp\" or \"tls\"", transport)
+			}
+			if _, _, err := parseMonitorRTRVersion(rtrVersion); err != nil {
+				return err
 			}
 
 			// Open the NDJSON sink for append, creating it if absent.
@@ -91,19 +147,11 @@ client; no validation or BMP ingestion happens here.`,
 				log.Warn("could not load anomaly baseline, starting cold", "path", snapshotPath, "error", err)
 			}
 
-			// Minimal in-memory stores: NewClient requires them, but this
-			// command performs no validation, so they are never queried.
-			vrpStore := store.NewVRPStore()
-			aspaStore := store.NewASPAStore()
-
-			// tlsCfg is nil: NewClient only consults it when transport == "tls",
-			// and a nil config falls back to the system root CA pool.
-			client, err := rtr.NewClient(cache, transport, nil, vrpStore, aspaStore, rtrMonitorProtoVersion, log)
+			client, err := newMonitorClient(cache, transport, rtrVersion, rec, log)
 			if err != nil {
 				f.Close()
-				return fmt.Errorf("create RTR client: %w", err)
+				return err
 			}
-			client.SetTelemetry(rec)
 			initAnomalyMetrics(cache)
 
 			// Consume the telemetry event channel: feed sync/structural events to
@@ -115,26 +163,16 @@ client; no validation or BMP ingestion happens here.`,
 			consumerDone := make(chan struct{})
 			go func() {
 				defer close(consumerDone)
-
 				syncsSinceSave := 0
-				for ev := range rec.Events() {
-					anomaly, observed := observeRTREvent(detector, ev, log)
-					if observed {
-						syncsSinceSave++
-						if syncsSinceSave >= rtrMonitorSaveEvery {
-							syncsSinceSave = 0
-							if err := detector.Save(snapshotPath); err != nil {
-								log.Warn("periodic anomaly baseline save failed", "path", snapshotPath, "error", err)
-							}
+				consumeRTREvents(rec, detector, func() {
+					syncsSinceSave++
+					if syncsSinceSave >= rtrMonitorSaveEvery {
+						syncsSinceSave = 0
+						if err := detector.Save(snapshotPath); err != nil {
+							log.Warn("periodic anomaly baseline save failed", "path", snapshotPath, "error", err)
 						}
 					}
-
-					if anomaly != nil {
-						rec.RecordAnomaly(anomaly)
-						metrics.RTRAnomalyTotal.WithLabelValues(anomaly.Cache, anomaly.Severity).Inc()
-						metrics.RTRAnomalyLastTimestamp.WithLabelValues(anomaly.Cache).Set(float64(anomaly.Timestamp.Unix()))
-					}
-				}
+				}, log)
 			}()
 
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -150,7 +188,7 @@ client; no validation or BMP ingestion happens here.`,
 				close(done)
 			}()
 
-			log.Info("RTR monitor started", "cache", cache, "transport", transport, "log_file", logFile)
+			log.Info("RTR monitor started", "cache", cache, "transport", transport, "rtr_version", rtrVersion, "log_file", logFile)
 
 			<-ctx.Done()
 			log.Info("shutting down RTR monitor")
@@ -189,6 +227,8 @@ client; no validation or BMP ingestion happens here.`,
 	cmd.Flags().StringVar(&logFile, "log-file", "rtr-telemetry.ndjson", "path to NDJSON telemetry output file")
 	cmd.Flags().StringVar(&transport, "transport", "tcp", "RTR transport: tcp or tls")
 	cmd.Flags().StringVar(&prometheus, "prometheus", "", "Prometheus listen address (e.g. :9595); empty disables metrics")
+	cmd.Flags().StringVar(&rtrVersion, "rtr-version", "auto",
+		"RTR protocol version: auto negotiates from 2 down to what the cache supports; 0, 1 or 2 pins the session to that version, with no fallback")
 	cmd.Flags().StringVar(&anomalySnapshot, "anomaly-snapshot", "~/.raven/anomaly-baseline.json", "path to the adaptive anomaly-detector baseline snapshot (JSON)")
 
 	return cmd
@@ -225,14 +265,7 @@ func observeRTREvent(d *telemetry.Detector, ev telemetry.SessionEvent, log *slog
 				"cache", ev.Cache, "vrp_total", ev.VRPTotal, "aspa_total", ev.ASPATotal)
 			return nil, false
 		}
-		return d.ObserveSync(ev.Cache, ev.Timestamp, map[string]float64{
-			telemetry.MetricIntervalSince: float64(ev.IntervalSince),
-			telemetry.MetricSyncDuration:  float64(ev.SyncDuration),
-			telemetry.MetricVRPAnnounced:  float64(ev.VRPAnnounced),
-			telemetry.MetricVRPWithdrawn:  float64(ev.VRPWithdrawn),
-			telemetry.MetricASPAAnnounced: float64(ev.ASPAAnnounced),
-			telemetry.MetricASPAWithdrawn: float64(ev.ASPAWithdrawn),
-		}), true
+		return d.ObserveSyncTotals(ev.Cache, ev.Timestamp, telemetry.SyncMetrics(ev), telemetry.TotalsOf(ev)), true
 	case telemetry.EventReset:
 		return d.ObserveStructural(ev.Cache, "cache_reset", ev.Timestamp), false
 	case telemetry.EventCacheNotReady:
@@ -245,6 +278,17 @@ func observeRTREvent(d *telemetry.Detector, ev telemetry.SessionEvent, log *slog
 		}
 		log.Info("RTR cache not ready yet, not an anomaly",
 			"cache", ev.Cache, "error_code", code, "error_text", ev.ErrorText)
+		return nil, false
+	case telemetry.EventVersionDowngrade:
+		// A step of version negotiation (Error Report code 4, or a dropped
+		// connection, before the session answered anything): expected
+		// against a cache that speaks an older version. Not an anomaly.
+		next := -1
+		if ev.NextProtoVersion != nil {
+			next = int(*ev.NextProtoVersion)
+		}
+		log.Info("RTR version negotiation step, not an anomaly", "cache", ev.Cache,
+			"proto_version", ev.ProtoVersion, "next_proto_version", next, "reason", ev.DowngradeReason)
 		return nil, false
 	case telemetry.EventError:
 		return d.ObserveError(ev.Cache, ev.ErrorCode, ev.Timestamp), false

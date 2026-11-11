@@ -71,6 +71,18 @@ All notable changes to RAVEN are recorded here.
 - `proto/raven/v1`: `RouteEntry` fields 18–22 (`rov_reason_code`,
   `rov_vrps`, `rov_deciding_vrp`, `communities`, `large_communities`),
   message `ROVVRPs`, and `RouteFilter.match`, all additive.
+- `raven rtr monitor --rtr-version auto|0|1|2` (#54). `auto`, the default,
+  negotiates from version 2 down; `0`, `1` or `2` pins the session to that
+  version: no fallback on code 4 or a dropped connection, and no re-probe.
+  `serve` accepts `0` in `rtr.rtr-version`. The two differ: serve's
+  `rtr.rtr-version` is the highest version to try and still falls back to
+  lower ones, as before; only the monitor's `--rtr-version 0|1|2` pins.
+  The configuration guide no longer calls serve's `1` and `2` "Force".
+- `rtrtest.Server`, a fake RTR cache for tests that answers Reset and
+  Serial Queries from a VRP and ASPA set at version 0, 1 or 2, advances
+  serials with deltas, sends Serial Notify, and can be scripted to answer
+  with an Error Report, close (FIN), reset (RST) or stall, recording every
+  query the client sent.
 
 ### Changed
 - The Loc-RIB user guide now links RFC 9069 and matches the implementation: origin AS, Loc-RIB peer and table fields, FRR 10.7.1 BMP syntax, and audit `--router` behavior.
@@ -141,6 +153,26 @@ All notable changes to RAVEN are recorded here.
   next AS P. The protobuf `RouteEntry` gains `aspa_failing_hop` (field 14).
 - The documentation site now has a light and dark theme toggle. The first visit follows the operating system preference.
 - The ASCII topology and architecture diagrams are now Mermaid diagrams.
+- RTR version negotiation: a cache that closes or resets the connection
+  before answering the first query (as some caches do for a version they
+  do not speak) gets one retry at the next lower version; if that also
+  fails, the client goes back to the version it was at with its normal
+  backoff. Negotiation steps (code 4 or this retry) reconnect at once
+  instead of after the backoff.
+- Telemetry meaning (rtr monitor NDJSON and `raven_rtr_anomaly_total`):
+  Error Report code 4 before a session answered anything is negotiation,
+  recorded as a new `version_downgrade` event (`proto_version`,
+  `next_proto_version`, `downgrade_reason`, `error_code`), no longer an
+  `error` event and a high structural anomaly (#55). Code 4 on an
+  established session, at version 0, or at a pinned version is still an
+  `error` and an anomaly.
+- Anomaly detector: the modified z is now measured in max(MAD, floor), the
+  floor per statistic: max(1% of the median, 1 s) for `interval_since_ns`
+  and `sync_duration_ns`, max(1, 0.01% of VRPs held) for `vrp_*`, max(1,
+  0.1% of ASPAs held) for `aspa_*` (#59). Timer-driven caches, whose MAD is
+  near 0, no longer trip on ordinary jitter or churn, and a window whose
+  MAD is exactly 0 is no longer skipped: it trips on a large deviation.
+  Anomaly counts and z values change accordingly.
 
 ### Fixed
 - `rov_reason` said `origin ASn not authorized by any covering VRP` for
@@ -195,6 +227,16 @@ All notable changes to RAVEN are recorded here.
 - Documentation pages now fence command output, router configuration and metric examples, so they render as code. The production architecture diagram was redrawn, and the observability note keeps its example inside the note.
 - The warm-start example on the active-response page uses the real configuration keys (`persistence`, `snapshot_dir`, `stale_eviction_timeout`) instead of the removed `snapshot` block.
 - CI build artifacts report the version, commit and date from `internal/buildinfo`. The linker flags named the removed `internal/cli` variables and were silently ignored.
+- `disconnected` telemetry events were defined but never emitted (#56).
+  Every session that connected now ends with one, with
+  `disconnect_reason` (`eof`, `reset`, `error_report` with `error_code`,
+  `timeout`, `shutdown`, `version_upgrade`, or `error` with `error_text`)
+  and `proto_version`.
+- `proto_version` was omitted from NDJSON records at version 0 (#57). It
+  is now in every record the RTR client writes (`connected`, `sync`,
+  `reset`, `error`, `cache_not_ready`, `disconnected`,
+  `version_downgrade`), 0 included; `sync` and `reset` records carry it for
+  the first time.
 
 ## v0.4.0 (2026-10-19)
 

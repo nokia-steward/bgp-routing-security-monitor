@@ -22,14 +22,14 @@ func longBaseline(i int) map[string]float64 {
 }
 
 // valueAtZ returns the value whose modified z against metric's current window
-// is z.
+// is z, for a cache with no totals (ObserveSync).
 func valueAtZ(t *testing.T, d *Detector, metric string, z float64) float64 {
 	t.Helper()
 	med, mad, ok := d.window(testCache, metric).medianMAD()
-	if !ok || mad == 0 {
-		t.Fatalf("metric %q not ready: mad=%v ok=%v", metric, mad, ok)
+	if !ok {
+		t.Fatalf("metric %q not ready", metric)
 	}
-	return med + z*mad/0.6745
+	return med + z*scale(metric, med, mad, Totals{})/0.6745
 }
 
 // The lab case: a baseline seeded at a 15-minute cadence, then syncs every

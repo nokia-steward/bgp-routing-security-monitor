@@ -22,6 +22,7 @@ const (
 	PDUResetQuery    = 2
 	pduCacheResponse = 3
 	pduIPv4Prefix    = 4
+	pduIPv6Prefix    = 6
 	pduEndOfData     = 7
 	pduCacheReset    = 8
 	pduErrorReport   = 10
@@ -41,30 +42,53 @@ type Query struct {
 
 // Conn is one client connection to the cache.
 type Conn struct {
-	t  testing.TB
-	nc net.Conn
+	t    testing.TB
+	nc   net.Conn
+	done <-chan struct{} // the cache's: closed when the test ends
+	mu   sync.Mutex      // serializes Send: one call's PDUs are never interleaved with another's
 }
 
-// Send writes PDUs to the client. A write error is logged, not fatal: the
-// client may have closed the connection on purpose.
+// Send writes PDUs to the client, all of them before any other Send on the
+// connection writes. A write error is logged, not fatal: the client may
+// have closed the connection on purpose.
 func (c *Conn) Send(pdus ...[]byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	for _, p := range pdus {
 		if _, err := c.nc.Write(p); err != nil {
-			c.t.Logf("rtrtest: send: %v", err)
+			select {
+			case <-c.done: // the test is over; logging now would panic
+			default:
+				c.t.Logf("rtrtest: send: %v", err)
+			}
 			return
 		}
 	}
 }
 
-// Close closes the connection from the cache's side.
+// Close closes the connection from the cache's side cleanly (a FIN): the
+// client reads EOF once it has read everything sent before.
 func (c *Conn) Close() { c.nc.Close() }
 
+// Reset closes the connection abruptly, with a TCP RST instead of a FIN
+// (SO_LINGER 0), as a cache does that closes with client bytes still
+// unread. The client's next read fails with "connection reset by peer";
+// anything it had not read yet may be lost.
+func (c *Conn) Reset() {
+	if tc, ok := c.nc.(*net.TCPConn); ok {
+		tc.SetLinger(0)
+	}
+	c.nc.Close()
+}
+
 // Cache is a fake RTR cache listening on 127.0.0.1. It answers nothing on
-// its own: every query the client sends arrives on Queries.
+// its own: every query the client sends arrives on Queries. For a cache
+// that answers from a data set, see Server.
 type Cache struct {
 	t       testing.TB
 	ln      net.Listener
 	Queries chan Query
+	done    chan struct{} // closed when the test ends
 
 	mu    sync.Mutex
 	conns []net.Conn
@@ -77,9 +101,10 @@ func NewCache(t testing.TB) *Cache {
 	if err != nil {
 		t.Fatalf("rtrtest: listen: %v", err)
 	}
-	c := &Cache{t: t, ln: ln, Queries: make(chan Query, 64)}
+	c := &Cache{t: t, ln: ln, Queries: make(chan Query, 64), done: make(chan struct{})}
 	go c.accept()
 	t.Cleanup(func() {
+		close(c.done)
 		ln.Close()
 		c.mu.Lock()
 		defer c.mu.Unlock()
@@ -102,7 +127,7 @@ func (c *Cache) accept() {
 		c.mu.Lock()
 		c.conns = append(c.conns, nc)
 		c.mu.Unlock()
-		go c.read(&Conn{t: c.t, nc: nc})
+		go c.read(&Conn{t: c.t, nc: nc, done: c.done})
 	}
 }
 
@@ -122,7 +147,11 @@ func (c *Cache) read(conn *Conn) {
 			q.Session = binary.BigEndian.Uint16(hdr[2:4])
 			q.Serial = binary.BigEndian.Uint32(body[0:4])
 		}
-		c.Queries <- q
+		select {
+		case c.Queries <- q:
+		case <-c.done:
+			return
+		}
 	}
 }
 
@@ -188,6 +217,17 @@ func IPv4Prefix(version uint8, announce bool, prefix netip.Prefix, maxLen uint8,
 		[]byte{flags, byte(prefix.Bits()), maxLen, 0}, a[:], u32(asn))
 }
 
+// IPv6Prefix announces (or withdraws) an IPv6 VRP.
+func IPv6Prefix(version uint8, announce bool, prefix netip.Prefix, maxLen uint8, asn uint32) []byte {
+	flags := byte(0)
+	if announce {
+		flags = 1
+	}
+	a := prefix.Addr().As16()
+	return pdu(version, pduIPv6Prefix, 0,
+		[]byte{flags, byte(prefix.Bits()), maxLen, 0}, a[:], u32(asn))
+}
+
 // EndOfData ends the cache's answer. Version 0 carries only the serial.
 func EndOfData(version uint8, session uint16, serial, refresh, retry, expire uint32) []byte {
 	if version == 0 {
@@ -244,4 +284,28 @@ func Gauge(name, cache string) float64 {
 		}
 	}
 	return -1
+}
+
+// CounterSum returns the sum over every series of the counter
+// name{cache=cache,...} in the default registry (for example
+// raven_rtr_anomaly_total across severities), or 0 if there is none.
+func CounterSum(name, cache string) float64 {
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		return 0
+	}
+	sum := 0.0
+	for _, mf := range families {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == "cache" && lp.GetValue() == cache {
+					sum += m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return sum
 }

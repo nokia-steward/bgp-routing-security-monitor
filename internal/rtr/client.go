@@ -15,6 +15,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/nokia/bgp-routing-security-monitor/internal/config"
@@ -71,6 +72,25 @@ var errCacheNotReady = errors.New("cache has no data available yet")
 // cache now supports the configured version.
 var errVersionUpgrade = errors.New("cache now supports a higher RTR protocol version")
 
+// errVersionDowngrade ends a session the cache turned down during version
+// negotiation (Error Report code 4 before any Cache Response). The client
+// reconnects at once, at the lower version negotiatedVersion now holds.
+var errVersionDowngrade = errors.New("cache does not support this RTR protocol version")
+
+// errNoResponse ends a session whose query went unanswered for the Retry
+// Interval.
+var errNoResponse = errors.New("no response from cache within the retry interval")
+
+// errorReportError ends a session the cache ended with an Error Report. It
+// wraps errCacheNotReady (code 2) or errVersionDowngrade where those apply.
+type errorReportError struct {
+	code uint16
+	err  error
+}
+
+func (e *errorReportError) Error() string { return e.err.Error() }
+func (e *errorReportError) Unwrap() error { return e.err }
+
 // defaultVersionReprobe is how often a downgraded client re-probes the cache
 // at the configured version unless SetVersionReprobeInterval says otherwise.
 const defaultVersionReprobe = time.Hour
@@ -113,9 +133,30 @@ type Client struct {
 
 	// negotiatedVersion is the version the next session opens at. It
 	// starts at configVersion and is lowered only when the cache rejects a
-	// version with Error Report code 4 (Unsupported Protocol Version), or
-	// answers at a lower one.
+	// version with Error Report code 4 (Unsupported Protocol Version),
+	// answers at a lower one, or drops the connection before answering the
+	// first query (see dropTrial). Never when pinned.
 	negotiatedVersion uint8
+
+	// pinned holds every session at configVersion: no fallback of any kind
+	// and no re-probe (SetVersionPinned).
+	pinned bool
+
+	// A cache that does not speak a version may close or reset the
+	// connection instead of sending Error Report code 4. The first session
+	// that ends that way, before any response to its first query, lowers the
+	// version by one for a single trial session (dropTrial, from
+	// dropTrialFrom). If the trial also gets no response, the client goes
+	// back to dropTrialFrom with its normal backoff, and does not lower the
+	// version on a drop again (dropRetryUsed) until some session gets a
+	// response. Owned by the goroutine running Start.
+	dropTrial     bool
+	dropTrialFrom uint8
+	dropRetryUsed bool
+	// sessionResponded is whether the current session received any PDU;
+	// sessionDialed whether it connected at all.
+	sessionResponded bool
+	sessionDialed    bool
 
 	// State of the cache's data as of the last End of Data. Owned by the
 	// goroutine running Start.
@@ -263,6 +304,12 @@ func (c *Client) SetOnSync(fn func()) {
 	c.onSync = fn
 }
 
+// SetVersionPinned, with pinned true, holds every session at the configured
+// version: a cache that rejects it (Error Report code 4), drops the
+// connection or answers at another version is retried at the same version
+// with the normal backoff, never at a lower one. Call before Start.
+func (c *Client) SetVersionPinned(pinned bool) { c.pinned = pinned }
+
 // SetVersionReprobeInterval sets how often, after a cache has made the client
 // downgrade, it checks whether the cache now supports the configured version
 // (default one hour). Zero or less keeps the default.
@@ -323,7 +370,7 @@ func (c *Client) Start(ctx context.Context) {
 			return
 		}
 
-		c.sessionSynced = false
+		c.sessionSynced, c.sessionResponded, c.sessionDialed = false, false, false
 		err := c.runSession(ctx)
 		if ctx.Err() != nil {
 			return
@@ -331,10 +378,16 @@ func (c *Client) Start(ctx context.Context) {
 		if c.sessionSynced {
 			retryDelay = c.retryMin
 		}
+		retryNow := c.negotiateAfterSession(err)
 
 		switch {
 		case errors.Is(err, errVersionUpgrade):
 			c.log.Info("RTR reconnecting to upgrade protocol version", "protocol_version", c.negotiatedVersion)
+			retryDelay = 0
+		case retryNow:
+			// A negotiation step, not a failure: try the lower version now.
+			c.log.Info("RTR reconnecting at a lower protocol version", "error", err,
+				"protocol_version", c.negotiatedVersion)
 			retryDelay = 0
 		case errors.Is(err, errCacheNotReady):
 			c.log.Info("RTR cache not ready, reconnecting", "error", err, "retry_in", retryDelay,
@@ -360,6 +413,96 @@ func (c *Client) Start(ctx context.Context) {
 			}
 		}
 		retryDelay = min(max(retryDelay*2, c.retryMin), c.retryMax)
+	}
+}
+
+// negotiateAfterSession updates the version the next session opens at from
+// how this one ended, and reports whether the next should start at once (a
+// negotiation step) rather than after the backoff.
+func (c *Client) negotiateAfterSession(err error) (retryNow bool) {
+	if c.sessionResponded {
+		// The cache answered at this version, whatever it said: drops
+		// before a response may lower the version again later.
+		c.dropTrial, c.dropRetryUsed = false, false
+	}
+	switch {
+	case errors.Is(err, errVersionDowngrade):
+		return true
+	case c.sessionResponded || c.pinned || !c.sessionDialed:
+		return false
+	}
+
+	// The session connected and ended with no response to its first query.
+	if c.dropTrial {
+		// The lower version did no better: the drop was not about the
+		// version. Back to the version that was in use, at the normal
+		// backoff.
+		c.dropTrial = false
+		c.log.Warn("RTR session at the lower protocol version also ended without a response; going back",
+			"protocol_version", c.protoVersion, "next_version", c.dropTrialFrom, "error", err)
+		c.negotiatedVersion = c.dropTrialFrom
+		return false
+	}
+	reason, _ := disconnectReason(context.Background(), err)
+	if (reason != telemetry.DisconnectReasonEOF && reason != telemetry.DisconnectReasonReset) ||
+		c.dropRetryUsed || c.protoVersion == 0 {
+		return false
+	}
+	next := c.protoVersion - 1
+	c.log.Warn("cache closed the connection before answering; retrying once at a lower RTR protocol version",
+		"protocol_version", c.protoVersion, "next_version", next, "disconnect_reason", reason)
+	c.tel.Record(telemetry.SessionEvent{
+		Cache:            c.address,
+		EventType:        telemetry.EventVersionDowngrade,
+		ProtoVersion:     c.protoVersion,
+		NextProtoVersion: &next,
+		DowngradeReason:  telemetry.DowngradeReasonSessionDropped,
+		DisconnectReason: string(reason),
+	})
+	c.dropTrial, c.dropTrialFrom, c.dropRetryUsed = true, c.protoVersion, true
+	c.negotiatedVersion = next
+	return true
+}
+
+// recordDisconnect records the end of a session that connected.
+func (c *Client) recordDisconnect(ctx context.Context, err error) {
+	reason, code := disconnectReason(ctx, err)
+	ev := telemetry.SessionEvent{
+		Cache:            c.address,
+		EventType:        telemetry.EventDisconnected,
+		DisconnectReason: string(reason),
+		ErrorCode:        code,
+		ProtoVersion:     c.protoVersion,
+	}
+	if err != nil && reason != telemetry.DisconnectReasonShutdown {
+		ev.ErrorText = err.Error()
+	}
+	c.tel.Record(ev)
+}
+
+// disconnectReason classifies how a session ended: err is what runSession
+// returned, ctx its context. code is the Error
+// Report's, for DisconnectReasonErrorReport.
+func disconnectReason(ctx context.Context, err error) (telemetry.DisconnectReason, *uint16) {
+	var report *errorReportError
+	var netErr net.Error
+	switch {
+	case ctx.Err() != nil || err == nil:
+		return telemetry.DisconnectReasonShutdown, nil
+	case errors.Is(err, errVersionUpgrade):
+		return telemetry.DisconnectReasonVersionUpgrade, nil
+	case errors.As(err, &report):
+		code := report.code
+		return telemetry.DisconnectReasonErrorReport, &code
+	case errors.Is(err, errNoResponse), errors.Is(err, syscall.ETIMEDOUT),
+		errors.As(err, &netErr) && netErr.Timeout():
+		return telemetry.DisconnectReasonTimeout, nil
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return telemetry.DisconnectReasonEOF, nil
+	case errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.EPIPE):
+		return telemetry.DisconnectReasonReset, nil
+	default:
+		return telemetry.DisconnectReasonError, nil
 	}
 }
 
@@ -467,14 +610,19 @@ func (c *Client) readLoop(r *bufio.Reader, out chan<- pduResult, stop <-chan str
 // need not notify, whenever the Refresh Interval from the last End of Data
 // passes without one (RFC 8210 §6). A query that gets no response within
 // the Retry Interval fails the session.
-func (c *Client) runSession(ctx context.Context) error {
+//
+// Every session that connects ends with a disconnected telemetry event
+// saying why.
+func (c *Client) runSession(ctx context.Context) (err error) {
 	c.protoVersion = c.negotiatedVersion
 
 	conn, tcpRaw, err := c.dial(ctx)
 	if err != nil {
 		return err
 	}
+	c.sessionDialed = true
 	defer conn.Close()
+	defer func() { c.recordDisconnect(ctx, err) }()
 	if c.connHook != nil {
 		c.connHook(conn)
 	}
@@ -560,7 +708,7 @@ func (c *Client) runSession(ctx context.Context) error {
 			}
 			continue
 		case <-timerC(response):
-			return fmt.Errorf("no response from cache within the retry interval (%s)", c.interval(c.retry))
+			return fmt.Errorf("%w (%s)", errNoResponse, c.interval(c.retry))
 		case <-timerC(reprobe):
 			reprobe = nil
 			c.log.Info("re-probing RTR protocol version", "version", c.configVersion,
@@ -599,6 +747,7 @@ func (c *Client) runSession(ctx context.Context) error {
 			}
 			return fmt.Errorf("read PDU: %w", res.err)
 		}
+		c.sessionResponded = true
 		// The cache is answering; a large dump may take a while to arrive.
 		if response != nil {
 			response.Reset(c.interval(c.retry))
@@ -609,6 +758,11 @@ func (c *Client) runSession(ctx context.Context) error {
 		case PDUCacheResponse:
 			c.log.Debug("cache response", "session_id", sessionID)
 			if !established {
+				if c.pinned && res.version != c.protoVersion {
+					c.log.Error("cache answered at another RTR protocol version than the pinned one",
+						"protocol_version", c.protoVersion, "answered_version", res.version)
+					return fmt.Errorf("cache answered at RTR protocol version %d, pinned to %d", res.version, c.protoVersion)
+				}
 				established = true
 				c.sessionEstablished(res.version)
 				if c.protoVersion < c.configVersion {
@@ -732,9 +886,10 @@ func (c *Client) runSession(ctx context.Context) error {
 		case PDUCacheReset:
 			c.log.Warn("cache reset received, performing full sync")
 			c.tel.Record(telemetry.SessionEvent{
-				Cache:       c.address,
-				EventType:   telemetry.EventReset,
-				ResetReason: telemetry.ResetReasonCacheResetPDU,
+				Cache:        c.address,
+				EventType:    telemetry.EventReset,
+				ResetReason:  telemetry.ResetReasonCacheResetPDU,
+				ProtoVersion: c.protoVersion,
 			})
 			c.fullSyncPending = true
 			if err := query(func() error { return c.sendResetQuery(conn, c.protoVersion) }); err != nil {
@@ -742,7 +897,7 @@ func (c *Client) runSession(ctx context.Context) error {
 			}
 
 		case PDUErrorReport:
-			return c.errorReport(res.version, sessionID, payload)
+			return c.errorReport(res.version, sessionID, payload, established)
 
 		default:
 			c.log.Debug("unknown RTR PDU type", "type", pduType)
@@ -759,7 +914,8 @@ func (c *Client) sessionEstablished(version uint8) {
 		c.negotiatedVersion = version
 	}
 	c.sessionVersion.Store(uint32(c.protoVersion))
-	c.log.Info("RTR session established", "transport", c.transport, "protocol_version", c.protoVersion)
+	c.log.Info("RTR session established", "transport", c.transport, "protocol_version", c.protoVersion,
+		"configured_version", c.configVersion, "pinned", c.pinned)
 	metrics.RTRProtocolVersion.WithLabelValues(c.address).Set(float64(c.protoVersion))
 	if c.protoVersion < 2 {
 		// ASPA records exist only from version 2. Drop any left from an
@@ -816,6 +972,7 @@ func (c *Client) endOfData(sessionID uint16, eod endOfData) {
 		ASPAWithdrawn: c.aspaWithdrawn,
 		SyncDuration:  now.Sub(c.syncStart),
 		SyncType:      syncType,
+		ProtoVersion:  c.protoVersion,
 	}
 	if !c.lastSyncTime.IsZero() {
 		ev.IntervalSince = now.Sub(c.lastSyncTime)
@@ -874,47 +1031,77 @@ func (c *Client) markExpired() {
 }
 
 // errorReport handles an Error Report from the cache, which ends the session,
-// and returns the error to end it with.
-func (c *Client) errorReport(version uint8, code uint16, payload []byte) error {
+// and returns the error to end it with. established says whether the
+// session had received a Cache Response before it.
+//
+// Code 4 (Unsupported Protocol Version) before the session is established
+// is version negotiation: the client steps down one version, or straight to
+// the cache's own version when its Error Report carries a lower one, and
+// records an informational version_downgrade event, not an error. Code 4 on
+// an established session, at version 0 or at a pinned version is a fault
+// and recorded as an error. Code 2 (No Data Available) never changes the
+// version.
+func (c *Client) errorReport(version uint8, code uint16, payload []byte, established bool) error {
 	errMsg := c.parseErrorReport(payload)
-	evType := telemetry.EventError
-	if code == errCodeNoDataAvailable {
-		evType = telemetry.EventCacheNotReady
-	}
-	c.tel.Record(telemetry.SessionEvent{
-		Cache:        c.address,
-		EventType:    evType,
-		ErrorText:    errMsg,
-		ErrorCode:    &code,
-		ProtoVersion: c.protoVersion,
-	})
-
-	switch code {
-	case errCodeNoDataAvailable:
-		// Not a version problem: the cache is still building its data
-		// (Routinator sends "Running initial validation" at startup).
-		// Retry later, at the same version.
-		return fmt.Errorf("%w (%s)", errCacheNotReady, errMsg)
-
-	case errCodeUnsupportedProtoVer:
-		if c.protoVersion == 0 {
-			c.log.Error("cache rejected RTR protocol version 0", "error_text", errMsg)
-			return fmt.Errorf("cache does not support RTR protocol version 0: %s", errMsg)
-		}
-		next := c.protoVersion - 1
+	canFallBack := code == errCodeUnsupportedProtoVer && !c.pinned && c.protoVersion > 0
+	var next uint8
+	if canFallBack {
+		next = c.protoVersion - 1
 		if version < c.protoVersion {
 			next = version // the cache's own version, from its Error Report
 		}
+	}
+	negotiating := canFallBack && !established
+
+	ev := telemetry.SessionEvent{
+		Cache:        c.address,
+		EventType:    telemetry.EventError,
+		ErrorText:    errMsg,
+		ErrorCode:    &code,
+		ProtoVersion: c.protoVersion,
+	}
+	switch {
+	case code == errCodeNoDataAvailable:
+		ev.EventType = telemetry.EventCacheNotReady
+	case negotiating:
+		ev.EventType = telemetry.EventVersionDowngrade
+		ev.NextProtoVersion = &next
+		ev.DowngradeReason = telemetry.DowngradeReasonUnsupportedVersion
+	}
+	c.tel.Record(ev)
+
+	wrap := func(err error) error { return &errorReportError{code: code, err: err} }
+	switch {
+	case code == errCodeNoDataAvailable:
+		// Not a version problem: the cache is still building its data
+		// (Routinator sends "Running initial validation" at startup).
+		// Retry later, at the same version.
+		return wrap(fmt.Errorf("%w (%s)", errCacheNotReady, errMsg))
+
+	case code == errCodeUnsupportedProtoVer && c.pinned:
+		c.log.Error("cache rejected the pinned RTR protocol version; retrying at the same version",
+			"protocol_version", c.protoVersion, "error_text", errMsg)
+		return wrap(fmt.Errorf("cache does not support the pinned RTR protocol version %d: %s", c.protoVersion, errMsg))
+
+	case code == errCodeUnsupportedProtoVer && c.protoVersion == 0:
+		c.log.Error("cache rejected RTR protocol version 0", "error_text", errMsg)
+		return wrap(fmt.Errorf("cache does not support RTR protocol version 0: %s", errMsg))
+
+	case code == errCodeUnsupportedProtoVer:
 		c.log.Warn("cache does not support this RTR protocol version, downgrading",
 			"protocol_version", c.protoVersion, "next_version", next, "error_text", errMsg,
-			"reprobe_in", c.reprobeInterval)
+			"established", established, "reprobe_in", c.reprobeInterval)
 		c.negotiatedVersion = next
 		c.downgradedAt = time.Now()
-		return fmt.Errorf("cache does not support RTR protocol version %d (retrying at %d): %s", c.protoVersion, next, errMsg)
+		err := fmt.Errorf("cache does not support RTR protocol version %d (retrying at %d): %s", c.protoVersion, next, errMsg)
+		if negotiating {
+			err = fmt.Errorf("%w: %w", errVersionDowngrade, err)
+		}
+		return wrap(err)
 
 	default:
 		c.log.Error("RTR error report from cache", "code", code, "error_text", errMsg)
-		return fmt.Errorf("cache sent error report (code %d): %s", code, errMsg)
+		return wrap(fmt.Errorf("cache sent error report (code %d): %s", code, errMsg))
 	}
 }
 

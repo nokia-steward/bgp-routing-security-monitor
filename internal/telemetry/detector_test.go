@@ -77,17 +77,38 @@ func TestMetricWindowFillAndWrap(t *testing.T) {
 	}
 }
 
-func TestModifiedZMADZero(t *testing.T) {
-	if _, ok := modifiedZ(100, 5, 0); ok {
-		t.Fatal("modifiedZ with MAD == 0 must report ok == false")
-	}
-	z, ok := modifiedZ(10, 4, 2)
-	if !ok {
-		t.Fatal("modifiedZ with nonzero MAD should report ok == true")
-	}
+func TestModifiedZ(t *testing.T) {
+	z := modifiedZ(10, 4, 2)
 	want := 0.6745 * (10 - 4) / 2
 	if math.Abs(z-want) > 1e-9 {
 		t.Fatalf("modifiedZ = %v, want %v", z, want)
+	}
+}
+
+// The scale is max(MAD, floor), the floor per statistic: max(1% of the
+// median, 1 s) for timings, max(1, 0.01% of VRPs held) for VRP counts,
+// max(1, 0.1% of ASPAs held) for ASPA counts. MAD 0 takes the floor.
+func TestScaleFloors(t *testing.T) {
+	sec := float64(time.Second)
+	for _, tc := range []struct {
+		metric      string
+		median, mad float64
+		totals      Totals
+		want        float64
+	}{
+		{MetricSyncDuration, 0.106 * sec, 0.0013 * sec, Totals{}, sec},             // Fort: 1 s floor
+		{MetricIntervalSince, 600.106 * sec, 0.005 * sec, Totals{}, 6.00106 * sec}, // Fort: 1% of 600 s
+		{MetricIntervalSince, 900 * sec, 30 * sec, Totals{}, 30 * sec},             // MAD above the floor
+		{MetricIntervalSince, 600 * sec, 0, Totals{}, 6 * sec},                     // MAD 0
+		{MetricVRPWithdrawn, 2, 2, Totals{VRPs: 1_000_000}, 100},                   // DaKnObNET
+		{MetricVRPAnnounced, 0, 0, Totals{}, 1},                                    // empty cache
+		{MetricVRPAnnounced, 20, 300, Totals{VRPs: 1_000_000}, 300},                // MAD above
+		{MetricASPAAnnounced, 0, 0, Totals{ASPAs: 5000}, 5},                        // 0.1% of ASPAs
+		{MetricASPAWithdrawn, 0, 0, Totals{ASPAs: 300, VRPs: 1_000_000}, 1},        // floor of 1
+	} {
+		if got := scale(tc.metric, tc.median, tc.mad, tc.totals); math.Abs(got-tc.want) > 1e-6*tc.want {
+			t.Errorf("scale(%s, median %v, mad %v, %+v) = %v, want %v", tc.metric, tc.median, tc.mad, tc.totals, got, tc.want)
+		}
 	}
 }
 
@@ -167,9 +188,10 @@ func TestHardTripExcludedFromWindow(t *testing.T) {
 
 func TestCorrelatedTrip(t *testing.T) {
 	d := NewDetector(DefaultAnomalyConfig())
-	// Warm two metrics with a symmetric spread so MAD is nonzero.
+	// Warm two metrics with a symmetric spread so MAD is above the floor:
+	// 90..110 s.
 	warmUp(t, d, 150, func(i int) map[string]float64 {
-		v := float64(90 + i%21) // 90..110
+		v := float64(time.Duration(90+i%21) * time.Second)
 		return map[string]float64{
 			MetricSyncDuration:  v,
 			MetricIntervalSince: v,
@@ -178,19 +200,12 @@ func TestCorrelatedTrip(t *testing.T) {
 
 	// Derive an exact value giving |z| == 4.0 (soft, below hard 6.0) for each.
 	const targetZ = 4.0
-	valueForZ := func(metric string) float64 {
-		med, mad, ok := d.window(testCache, metric).medianMAD()
-		if !ok || mad == 0 {
-			t.Fatalf("metric %q not ready: mad=%v ok=%v", metric, mad, ok)
-		}
-		return med + targetZ*mad/0.6745
-	}
-	sdVal := valueForZ(MetricSyncDuration)
-	isVal := valueForZ(MetricIntervalSince)
+	sdVal := valueAtZ(t, d, MetricSyncDuration, targetZ)
+	isVal := valueAtZ(t, d, MetricIntervalSince, targetZ)
 
 	// One metric elevated alone: only one soft crosser (< CorrelatedCount) -> no trip.
 	if ev := d.ObserveSync(testCache, time.Unix(1_700_100_000, 0),
-		map[string]float64{MetricSyncDuration: sdVal, MetricIntervalSince: 100}); ev != nil {
+		map[string]float64{MetricSyncDuration: sdVal, MetricIntervalSince: float64(100 * time.Second)}); ev != nil {
 		t.Fatalf("single elevated metric tripped: %+v", ev)
 	}
 
@@ -231,17 +246,22 @@ func TestObserveStructuralAlwaysHigh(t *testing.T) {
 	}
 }
 
-func TestMADZeroNoPanicNoSpuriousAnomaly(t *testing.T) {
+// A window constant at 0 has MAD 0. It used to be skipped, so the metric
+// could never trip; now the floor gives it a scale, a small value stays
+// quiet and a large one trips.
+func TestMADZeroWindowStillTrips(t *testing.T) {
 	d := NewDetector(DefaultAnomalyConfig())
-	// A metric constant at 0 for the whole window -> MAD == 0.
 	warmUp(t, d, 150, func(i int) map[string]float64 {
 		return map[string]float64{MetricASPAWithdrawn: 0}
 	})
-
-	// A large value with MAD == 0 must be skipped (ok == false), not flagged.
-	ev := d.ObserveSync(testCache, time.Unix(1_700_100_000, 0),
-		map[string]float64{MetricASPAWithdrawn: 99999})
-	if ev != nil {
-		t.Fatalf("MAD == 0 produced a spurious anomaly: %+v", ev)
+	totals := Totals{ASPAs: 1000} // floor 1
+	if ev := d.ObserveSyncTotals(testCache, time.Unix(1_700_100_000, 0),
+		map[string]float64{MetricASPAWithdrawn: 2}, totals); ev != nil {
+		t.Fatalf("2 ASPAs withdrawn against a constant-0 window tripped: %+v", ev)
+	}
+	ev := d.ObserveSyncTotals(testCache, time.Unix(1_700_100_100, 0),
+		map[string]float64{MetricASPAWithdrawn: 99999}, totals)
+	if ev == nil || ev.Severity != "high" || ev.Trigger != MetricASPAWithdrawn {
+		t.Fatalf("99999 ASPAs withdrawn against a constant-0 window: %+v, want a high trip on %s", ev, MetricASPAWithdrawn)
 	}
 }

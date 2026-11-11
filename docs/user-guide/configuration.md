@@ -43,7 +43,7 @@ rtr:
       tls:
         ca: "/etc/raven/rpki-ca.pem"
         tls-min-version: "1.2"      # 1.2 (default) | 1.3
-  rtr-version: auto                 # auto | 1 | 2 (default: auto)
+  rtr-version: auto                 # auto | 0 | 1 | 2: highest version to try (default: auto, i.e. 2)
   expire-interval: 7200             # Override every cache's Expire Interval (600-172800 s; default: the cache's own)
 
 validation:
@@ -140,12 +140,25 @@ and never makes RAVEN do TLS work on its behalf.
 all configured caches and uses the one with the lowest preference number as
 primary. If the primary fails, it falls back to the next.
 
-**`rtr.rtr-version`** — Protocol version negotiation:
+**`rtr.rtr-version`** — The highest RTR protocol version to try. RAVEN
+opens each cache's session at this version and falls back to lower ones
+when the validator does not support it: on Error Report code 4
+(Unsupported Protocol Version), or when the validator closes the
+connection before answering. It then re-probes this version every
+`rtr.version-reprobe-interval` (default one hour) and moves back up once
+the validator supports it. RTR v2 gives ASPA data; v1 and v0 give VRPs
+only.
 
-- `auto` (default) — RAVEN negotiates the highest version the validator supports.
-  RTR v2 gives ASPA data; RTR v1 gives VRPs only.
-- `1` — Force RTR v1 (VRPs only, no ASPA)
-- `2` — Force RTR v2 (VRPs + ASPA). Will fail if validator doesn't support it.
+- `auto` (default) — Try version 2, the same as `2`.
+- `2` — Try version 2, falling back to 1, then 0.
+- `1` — Try version 1, falling back to 0. Never asks for version 2, so no
+  ASPA data.
+- `0` — Version 0 only (VRPs only, no ASPA, no End of Data timing).
+
+No value of `rtr.rtr-version` pins the version: `serve` always falls back.
+`raven rtr monitor --rtr-version 0|1|2` is different: it pins the session
+to that version, with no fallback and no re-probe (see the
+[CLI reference](cli-reference.md#raven-rtr-monitor)).
 
 **`rtr.expire-interval`** — Overrides the Expire Interval, in seconds, for
 every RTR cache. The Expire Interval is how long RPKI data from a cache
@@ -378,10 +391,12 @@ routinator server \
 The IANA-assigned port for RTR-over-TLS is 324; use
 3324 to avoid requiring root privileges.
 
-**RTR version pinning:**
+**Starting below RTR v2:**
 
-If your validator does not support RTR v2, pin to v1
-to avoid reconnection loops during version negotiation:
+If your validator does not support RTR v2, start at v1. RAVEN then never
+asks it for version 2: no Error Report code 4 at each start and no hourly
+version 2 re-probe. It still falls back to v0 if the validator turns v1
+down:
 
 ```yaml
 rtr:

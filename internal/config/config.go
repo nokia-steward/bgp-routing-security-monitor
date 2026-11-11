@@ -242,7 +242,7 @@ type KafkaIngest struct {
 
 type RTRConfig struct {
 	Caches         []RTRCacheConfig `mapstructure:"caches"`
-	RTRVersion     string           `mapstructure:"rtr-version"`     // "auto", "1", "2"
+	RTRVersion     string           `mapstructure:"rtr-version"`     // "auto", "0", "1", "2"
 	ExpireInterval int              `mapstructure:"expire-interval"` // seconds, 0 = use cache default
 	// VersionReprobeInterval is how often a client that a cache made
 	// downgrade (Error Report code 4) checks whether the cache now supports
@@ -455,10 +455,10 @@ func Load() (*Config, error) {
 func validate(cfg *Config) error {
 	// RTR version must be valid
 	switch cfg.RTR.RTRVersion {
-	case "auto", "1", "2", "":
+	case "auto", "0", "1", "2", "":
 		// ok
 	default:
-		return fmt.Errorf("invalid rtr-version %q: must be auto, 1, or 2", cfg.RTR.RTRVersion)
+		return fmt.Errorf("invalid rtr-version %q: must be auto, 0, 1, or 2", cfg.RTR.RTRVersion)
 	}
 
 	if _, err := ParseAllowedRouters(cfg.BMP.AllowedRouters); err != nil {
