@@ -128,6 +128,8 @@ type Client struct {
 	sessionVersion atomic.Uint32
 	onUpdate       func(*store.Delta)
 	onSync         func()
+	onDisconnect   func(telemetry.DisconnectReason)
+	lastSerial     atomic.Uint32 // serial, for Serial
 	readyOnce      sync.Once
 	ready          chan struct{}
 
@@ -304,6 +306,19 @@ func (c *Client) SetOnSync(fn func()) {
 	c.onSync = fn
 }
 
+// SetOnDisconnect sets a callback invoked each time a session that
+// connected ends, with the reason (the same as the disconnected telemetry
+// event's disconnect_reason). It runs on the goroutine running Start and
+// must not block. Call before Start.
+func (c *Client) SetOnDisconnect(fn func(telemetry.DisconnectReason)) {
+	c.onDisconnect = fn
+}
+
+// Serial returns the cache's serial as of the last End of Data: from the
+// update and sync callbacks, the serial of the sync that called them. Safe
+// from any goroutine.
+func (c *Client) Serial() uint32 { return c.lastSerial.Load() }
+
 // SetVersionPinned, with pinned true, holds every session at the configured
 // version: a cache that rejects it (Error Report code 4), drops the
 // connection or answers at another version is retried at the same version
@@ -478,6 +493,9 @@ func (c *Client) recordDisconnect(ctx context.Context, err error) {
 		ev.ErrorText = err.Error()
 	}
 	c.tel.Record(ev)
+	if c.onDisconnect != nil {
+		c.onDisconnect(reason)
+	}
 }
 
 // disconnectReason classifies how a session ended: err is what runSession
@@ -941,6 +959,7 @@ func (c *Client) endOfData(sessionID uint16, eod endOfData) {
 	}
 	c.delta = nil
 	c.sessionID, c.serial, c.haveSerial = sessionID, eod.serial, true
+	c.lastSerial.Store(eod.serial)
 	c.refresh, c.retry, c.expire = eod.refresh, eod.retry, eod.expire
 	if c.expireOverride != 0 {
 		c.expire = c.expireOverride

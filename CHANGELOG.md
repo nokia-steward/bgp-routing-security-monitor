@@ -5,6 +5,37 @@ All notable changes to RAVEN are recorded here.
 ## Unreleased
 
 ### Added
+- RTR-driven posture changes reach the event engine. A route an RTR update
+  makes Invalid, NotFound or path-suspect now fires webhook, FlowSpec and log
+  rules; before, only `raven watch` was told. BMP-driven and RTR-driven
+  changes go through one place, which publishes each change once to watch,
+  the event engine and metrics.
+- `source` (`bmp` or `rtr`) on watch events, on webhook payloads (with the
+  cache's `serial` for `rtr`) and in the log action, and a `source` trigger
+  to match on it.
+- RTR bulk guard, `events.rtr-bulk-threshold` (default 100; negative
+  disables it, with a warning at startup). Each RTR update (revalidation
+  pass) is counted twice against it. Changes that match a rule with an
+  action: over the threshold, their per-route webhook, FlowSpec and log
+  actions do not run, and each of those rules gets one `rtr_bulk_change`
+  event instead; a harmless wave (NotFound to Valid after a new ROA) does not
+  count, so it cannot suppress an alert in the same update. Every posture
+  change in the pass: over the threshold, rules with the new
+  `rtr_bulk_change` trigger get one `rtr_bulk_change` event, whether or not
+  another rule matches the changes. One event per pass, at most once per
+  rule; its payload carries both counts (`changes` and `matched`, each with
+  transitions and up to 20 sample prefixes), the threshold, the cache and
+  serial, and whether per-route actions were `suppressed`. It goes to
+  notification actions (`webhook`, `log`) only, never to a FlowSpec action.
+  Watch still gets every change.
+- Metrics: `raven_rtr_disconnects_total{cache,reason}` in `raven serve`, with
+  the reason set of `raven rtr monitor`'s `disconnect_reason`;
+  `raven_watch_events_dropped_total`; `raven_route_posture_changes_total{source,from,to}`;
+  `raven_events_rtr_bulk_changes_total`; `raven_events_rtr_bulk_suppressed_actions_total`.
+- `bmptest`, a fake monitored router for tests (BMP Initiation, Peer Up,
+  Route Monitoring with GoBGP-encoded IPv4 and IPv6 UPDATEs, withdrawals,
+  Peer Down, Termination), and end-to-end tests of `raven serve` with it and
+  `rtrtest`.
 - Multi-arch container images (`linux/amd64`, `linux/arm64`) are published on every `v*` tag to GHCR and, when a Docker Hub namespace and token are configured, to Docker Hub. The image runs as a non-root user, and pre-release tags do not update `latest`.
 - The `Docker image` workflow rebuilds any existing tag when run from the `Actions` tab with the `tag` input set. A tag published before the `Dockerfile` existed borrows it from the branch the workflow runs on, so a backfill needs no local build.
 - `raven watch --rib`, and `--rib` (API `rib` parameter) on `raven routes`
@@ -85,6 +116,24 @@ All notable changes to RAVEN are recorded here.
   query the client sent.
 
 ### Changed
+- Identical BMP re-announcements no longer emit events: a re-announcement
+  that changes nothing about a route (same attributes, same validation
+  result) sends neither a `raven watch` event nor a `posture_change` event
+  (which had the old posture equal to the new). A re-announcement that
+  changes anything, its posture or only its attributes, still does both.
+  Rules with a `posture` trigger no longer fire again on each identical
+  re-announcement.
+- RTR-driven per-route events reach the event engine when their
+  revalidation pass ends, not as each route is revalidated, so the bulk
+  guard can count the pass first. `raven watch` still gets each change at
+  once; BMP-driven events are not delayed.
+- The `raven watch` buffer is now 1024 events per client, up from 100, so
+  a revalidation pass at the bulk threshold does not overflow a client that
+  is reading. A client that falls behind is logged once per overflow, not
+  silently.
+- The OpenTelemetry gauge `raven.rtr.session.state` goes to 0 when an RTR
+  session ends; it stayed 1 until the client stopped (the Prometheus
+  `raven_rtr_session_state` already went to 0).
 - The Loc-RIB user guide now links RFC 9069 and matches the implementation: origin AS, Loc-RIB peer and table fields, FRR 10.7.1 BMP syntax, and audit `--router` behavior.
 - The documentation site now builds with Zensical instead of MkDocs. The CI docs gate stays strict, so a broken link or anchor still fails the build.
 - Repository guidance for coding agents now lives in `AGENTS.md`, the shared convention read by both OpenCode and Claude Code, instead of `CLAUDE.md`.

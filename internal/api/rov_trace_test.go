@@ -172,7 +172,7 @@ func TestRouteJSONTraceTruncated(t *testing.T) {
 func TestWatchEventHasTrace(t *testing.T) {
 	s := traceServer(t, productionVRPs)
 	ch := make(chan RouteResponse, 1)
-	s.watchSubs[ch] = &routeFilter{}
+	s.watchSubs[ch] = &watcher{}
 	r := productionRoute()
 	r.ROV = rovOf(t, s, r)
 	s.NotifyRoute(r)

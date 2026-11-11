@@ -86,6 +86,11 @@ type PersistenceConfig struct {
 // EventsConfig configures the Phase 3 active-response event engine.
 type EventsConfig struct {
 	Rules []RuleConfig `mapstructure:"rules"`
+	// RTRBulkThreshold is the RTR bulk guard: an RTR update that changes
+	// the posture of more routes than this is reported as one
+	// rtr_bulk_change event, and its per-route actions are not run. 0
+	// (unset) is the default, 100; a negative value disables the guard.
+	RTRBulkThreshold int `mapstructure:"rtr-bulk-threshold"`
 }
 
 // RuleConfig is the YAML representation of a single event rule.
@@ -99,7 +104,8 @@ type RuleConfig struct {
 
 // TriggerConfig is the YAML representation of a trigger.
 // The Type field selects the trigger kind: posture, posture_change, prefix,
-// asn, protected_asn, cache_unhealthy, rib, or compound.
+// asn, protected_asn, cache_unhealthy, rib, source, rtr_bulk_change, or
+// compound.
 type TriggerConfig struct {
 	Type     string   `mapstructure:"type"`
 	Postures []string `mapstructure:"postures"`
@@ -111,6 +117,8 @@ type TriggerConfig struct {
 	// ASNMatch controls how the asn trigger matches: "origin" (default) checks
 	// only the last ASN in the AS path; "path" matches any ASN in the full path.
 	ASNMatch string `mapstructure:"asn_match"`
+	// Sources is used by the source trigger: "bmp", "rtr" or both.
+	Sources []string `mapstructure:"sources"`
 	// Operator is used by compound triggers: "and" or "or".
 	Operator string `mapstructure:"operator"`
 	// Triggers holds sub-triggers for compound triggers.
@@ -424,6 +432,7 @@ func Load() (*Config, error) {
 	viper.SetDefault("bmp.listen", ":11019")
 	viper.SetDefault("api.listen", DefaultAPIListen)
 	viper.SetDefault("rtr.rtr-version", "auto")
+	viper.SetDefault("events.rtr-bulk-threshold", 100)
 	viper.SetDefault("rtr.version-reprobe-interval", time.Hour)
 	viper.SetDefault("validation.rov", true)
 	viper.SetDefault("validation.aspa", true)

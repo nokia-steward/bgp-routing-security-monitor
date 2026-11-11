@@ -578,6 +578,8 @@ events:
 | `asn` | Fires when a route involves one of the listed ASNs. `asn_match: origin` (default) matches the origin only; `asn_match: path` matches any ASN in the full path |
 | `protected_asn` | Fires when an origin-invalid route hijacks a prefix authorised for one of the listed ASNs |
 | `cache_unhealthy` | Fires when an RTR cache becomes unreachable |
+| `source` | Fires on events whose change came from one of `sources`: `bmp` (a BMP announcement or withdrawal) or `rtr` (revalidation after an RTR update). Use it in a `compound` trigger to keep a rule to one kind of change |
+| `rtr_bulk_change` | Fires once for a revalidation pass that changes the posture of more routes than `events.rtr-bulk-threshold`, whether or not another rule matches them (see [RTR bulk guard](#rtr-bulk-guard)) |
 | `rib` | Fires on routes in one of the RIBs in `ribs`: `adj-rib-in-pre` (or `pre-policy`), `adj-rib-in-post` (or `post-policy`), `loc-rib`, `adj-rib-out-pre`, `adj-rib-out-post`. Use it in a `compound` trigger to keep a rule to some RIBs. An empty `ribs` or an unknown name is a configuration error |
 | `compound` | Combines sub-`triggers` with an `operator` of `and` or `or` |
 
@@ -624,6 +626,98 @@ none. A router that sends several RIBs fires a rule once per RIB; see
 authorized originators in matched VRPs — present only when there are covering VRPs
 (relevant for `protected_asn` trigger alerts). `rib` and
 `peer_distinguisher` (`""` for a global-instance peer) are always present.
+`source` says what made the change: `bmp` (an announcement or withdrawal)
+or `rtr` (revalidation after an RTR update, which also carries the cache's
+`serial`). `type` is `new_route`, `posture_change`, `route_withdraw`,
+`cache_unhealthy` or `rtr_bulk_change`.
+
+### RTR bulk guard
+
+```yaml
+events:
+  rtr-bulk-threshold: 100   # default; a negative value disables the guard
+```
+
+An RTR update changes routes RAVEN already holds: a new VRP can turn routes
+Invalid, a withdrawn one Valid routes NotFound, an ASPA record routes
+path-suspect. Each such change is an event with `source: rtr`, and rules fire
+on it as on a BMP change.
+
+One RTR update can change thousands of routes at once. A repository outage,
+or a ROA withdrawn by mistake, has turned about 400 legitimate routes Invalid
+in a single update. A webhook per route pages someone hundreds of times, and
+a FlowSpec rule per route can drop traffic that was legitimate all along.
+
+So the guard counts each RTR update (one revalidation pass, normally one
+End of Data) against `events.rtr-bulk-threshold` twice, for two purposes:
+
+| Count | What it counts | When it is over the threshold |
+|---|---|---|
+| **matched** | Changes that match the trigger of a rule with at least one action. Each change counts once, however many rules it matches. | The per-route events of those changes are suppressed: none of their webhook, FlowSpec or log actions run, and each rule they would have fired gets one `rtr_bulk_change` event instead. |
+| **changes** | Every posture change in the pass, whether or not a rule matches it. | Every rule with an `rtr_bulk_change` trigger gets one `rtr_bulk_change` event. |
+
+Suppression counts only matched changes, so a large harmless wave, such as
+500 routes going NotFound to Valid after a new ROA, cannot push an update
+over the threshold and suppress the one origin-invalid alert in the same
+update. The alert fires as usual. A rule with an `rtr_bulk_change` trigger
+still hears about the wave, because that trigger counts every change: a mass
+change is worth knowing about even when it is harmless.
+
+Each pass produces at most one `rtr_bulk_change` event, and each rule gets it
+at most once, even when both counts are over the threshold or a rule both had
+its per-route events suppressed and has an `rtr_bulk_change` trigger. No other
+rule sees it.
+
+The bulk event reaches notification actions only: `webhook` and `log`. It
+never reaches a `flowspec` action, so it never produces a FlowSpec rule, per
+route or aggregate, and `global-correlate` does not run for it:
+
+```json
+{
+  "type": "rtr_bulk_change",
+  "rule_name": "alert-origin-invalid",
+  "source": "rtr",
+  "cache_name": "rpki1.example.com:3323",
+  "serial": 4182,
+  "bulk": {
+    "threshold": 100,
+    "suppressed": true,
+    "changes": {
+      "routes": 431,
+      "transitions": {"origin-only->origin-invalid": 409, "unverified->origin-invalid": 3, "unverified->origin-only": 19},
+      "sample_prefixes": ["203.0.113.0/24", "198.51.100.0/24", "..."]
+    },
+    "matched": {
+      "routes": 412,
+      "transitions": {"origin-only->origin-invalid": 409, "unverified->origin-invalid": 3},
+      "sample_prefixes": ["203.0.113.0/24", "198.51.100.0/24", "..."]
+    }
+  }
+}
+```
+
+`changes` is every posture change in the pass and `matched` the ones a rule
+with an action matched, each with its count, transitions and up to 20 sample
+prefixes. `suppressed` says whether the matched changes' per-route actions
+were suppressed (`matched.routes` over `threshold`). A rule with an
+`rtr_bulk_change` trigger can get the event with `suppressed: false`, when
+only the total was over the threshold; the matched changes then fired their
+per-route events as usual. The route fields (`prefix`, `peer_addr`, ...) are
+empty. `raven watch` still shows every change, route by route.
+`raven_events_rtr_bulk_changes_total` counts the bulk events sent and
+`raven_events_rtr_bulk_suppressed_actions_total` the per-route actions not
+run.
+
+The default, 100, is well above what a normal update changes on a
+production table, and well below an outage's hundreds. Lower it if a
+FlowSpec rule per Invalid route is in place; raise it, or disable it with a
+negative value, only if every per-route action is wanted however many
+routes one update changes. RAVEN logs a warning at startup when the guard
+is disabled. The per-route events of an update are sent
+when its revalidation pass ends, so that the guard can count them first;
+BMP-driven events are not delayed. If several RTR updates arrive before a
+pass starts, they are revalidated together and count as one update; the
+event then names every cache and the last serial.
 
 **Flowspec options:**
 

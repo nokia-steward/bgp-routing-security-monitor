@@ -202,7 +202,7 @@ func TestWatchJSONFailingHopFromEngine(t *testing.T) {
 	s := NewServer(routetable.New(), nil, store.NewVRPStore(), log, "test")
 	ch := make(chan RouteResponse, 1)
 	s.watchMu.Lock()
-	s.watchSubs[ch] = &routeFilter{}
+	s.watchSubs[ch] = &watcher{}
 	s.watchMu.Unlock()
 	s.NotifyRoute(r)
 	b, _ := json.Marshal(<-ch)
