@@ -7,7 +7,7 @@ RAVEN is a single binary with no runtime dependencies. Pick the method that suit
 If you have Go 1.24+ installed:
 
 ```bash
-go install github.com/nokia-steward/bgp-routing-security-monitor/cmd/raven@latest
+go install github.com/nokia/bgp-routing-security-monitor/cmd/raven@latest
 ```
 
 Verify:

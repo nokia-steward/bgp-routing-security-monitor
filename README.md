@@ -83,7 +83,7 @@ production deployment guide:
 Run the full stack on your laptop using Containerlab:
 
 ```bash
-git clone https://github.com/nokia/bgp-routing-security-monitor.git
+git clone https://github.com/nokia-steward/bgp-routing-security-monitor.git
 cd bgp-routing-security-monitor
 bash lab/demo-master.sh setup
 ```
