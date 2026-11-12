@@ -27,6 +27,15 @@
     },
     {
       "$ref": "#/$defs/anomaly"
+    },
+    {
+      "$ref": "#/$defs/divergence"
+    },
+    {
+      "$ref": "#/$defs/divergence_resolved"
+    },
+    {
+      "$ref": "#/$defs/upstream_change"
     }
   ],
   "$defs": {
@@ -661,6 +670,456 @@
           }
         }
       ]
+    },
+    "divergence": {
+      "type": "object",
+      "description": "The cache has persistently disagreed with the other compared caches (longer than the settle window): a divergence episode began. One per episode, not per item.",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1,
+          "description": "Version of this contract. Records written before it existed have none."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the event happened: RFC 3339 with up to nanosecond precision and a UTC offset, which consumers must honor. RAVEN writes UTC (Z); files from older releases may carry the host's local offset."
+        },
+        "cache": {
+          "type": "string",
+          "description": "The cache the episode is at, as given to --cache (host:port)."
+        },
+        "event_type": {
+          "const": "divergence",
+          "description": "The cache has persistently disagreed with the other compared caches (longer than the settle window): a divergence episode began. One per episode, not per item."
+        },
+        "episode": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The episode's number at this cache, from 1, in this process."
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the episode's earliest difference first appeared, in its current shape (the compared caches and who held it)."
+        },
+        "compared": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The caches compared when the record was written, in --cache order: those connected that have completed a sync in their current session."
+        },
+        "settle_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The settle window in effect, in nanoseconds: a difference counts once it has lasted longer."
+        },
+        "counts": {
+          "type": "object",
+          "description": "Persistent differences attributed to the cache, by kind; only kinds with at least one.",
+          "propertyNames": {
+            "enum": [
+              "vrp_missing",
+              "vrp_extra",
+              "vrp_split",
+              "aspa_missing",
+              "aspa_extra",
+              "aspa_mismatch",
+              "aspa_split"
+            ]
+          },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "samples": {
+          "type": "array",
+          "description": "Up to 20 of the persistent differences, taken from each kind in turn, sorted by kind and item.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "vrp_missing",
+                  "vrp_extra",
+                  "vrp_split",
+                  "aspa_missing",
+                  "aspa_extra",
+                  "aspa_mismatch",
+                  "aspa_split"
+                ]
+              },
+              "prefix": {
+                "type": "string",
+                "description": "The VRP's prefix, as the cache sent it (address/length)."
+              },
+              "max_length": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 128,
+                "description": "The VRP's maxLength."
+              },
+              "asn": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295,
+                "description": "The VRP's origin AS."
+              },
+              "customer_asn": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295,
+                "description": "ASPA kinds: the customer AS."
+              },
+              "providers": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                },
+                "description": "ASPA kinds: the cache's provider set, sorted; absent when it has none."
+              },
+              "majority_providers": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                },
+                "description": "ASPA kinds: the majority's provider set, sorted; absent on aspa_split and when the majority has none."
+              },
+              "agree": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The compared caches that hold what this cache holds for the item, it included."
+              },
+              "disagree": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The compared caches that do not."
+              }
+            },
+            "required": [
+              "kind",
+              "agree",
+              "disagree"
+            ],
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "vrp_missing",
+                        "vrp_extra",
+                        "vrp_split"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "prefix",
+                    "max_length",
+                    "asn"
+                  ]
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "aspa_missing",
+                        "aspa_extra",
+                        "aspa_mismatch",
+                        "aspa_split"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "customer_asn"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "split_with": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "When counts has a split kind: the caches on the other side of the split items."
+        }
+      },
+      "required": [
+        "schema_version",
+        "timestamp",
+        "cache",
+        "event_type",
+        "episode",
+        "started_at",
+        "compared",
+        "settle_ns",
+        "counts",
+        "samples"
+      ],
+      "additionalProperties": false
+    },
+    "divergence_resolved": {
+      "type": "object",
+      "description": "A divergence episode ended: the cache no longer disagrees with the other compared caches on anything.",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1,
+          "description": "Version of this contract. Records written before it existed have none."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the event happened: RFC 3339 with up to nanosecond precision and a UTC offset, which consumers must honor. RAVEN writes UTC (Z); files from older releases may carry the host's local offset."
+        },
+        "cache": {
+          "type": "string",
+          "description": "The cache the episode was at, as given to --cache (host:port)."
+        },
+        "event_type": {
+          "const": "divergence_resolved",
+          "description": "A divergence episode ended: the cache no longer disagrees with the other compared caches on anything."
+        },
+        "episode": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The episode's number at this cache, from 1, in this process."
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the episode's earliest difference first appeared, in its current shape (the compared caches and who held it)."
+        },
+        "duration_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Nanoseconds from started_at to this record."
+        },
+        "compared": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The caches compared when the record was written, in --cache order: those connected that have completed a sync in their current session."
+        }
+      },
+      "required": [
+        "schema_version",
+        "timestamp",
+        "cache",
+        "event_type",
+        "episode",
+        "started_at",
+        "duration_ns",
+        "compared"
+      ],
+      "additionalProperties": false
+    },
+    "upstream_change": {
+      "type": "object",
+      "description": "The same large change (one that tripped the anomaly detector) reached every compared cache within the settle window: a change upstream of the validators, not at one of them. One record for the change, in place of one per cache; the per-cache anomaly records are still written.",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1,
+          "description": "Version of this contract. Records written before it existed have none."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the event happened: RFC 3339 with up to nanosecond precision and a UTC offset, which consumers must honor. RAVEN writes UTC (Z); files from older releases may carry the host's local offset."
+        },
+        "cache": {
+          "type": "string",
+          "description": "The cache whose sync completed the match, as given to --cache (host:port)."
+        },
+        "event_type": {
+          "const": "upstream_change",
+          "description": "The same large change (one that tripped the anomaly detector) reached every compared cache within the settle window: a change upstream of the validators, not at one of them. One record for the change, in place of one per cache; the per-cache anomaly records are still written."
+        },
+        "caches": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The caches the change reached: every compared cache, in --cache order."
+        },
+        "changes": {
+          "type": "array",
+          "description": "Each cache's sync that carried the change, in --cache order.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cache": {
+                "type": "string"
+              },
+              "serial": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295
+              },
+              "timestamp": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "vrp_announced": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "vrp_withdrawn": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "aspa_changed": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "cache",
+              "serial",
+              "timestamp",
+              "vrp_announced",
+              "vrp_withdrawn",
+              "aspa_changed"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "overlap": {
+          "type": "number",
+          "minimum": 0.9,
+          "maximum": 1,
+          "description": "The least overlap between the completing cache's change and another's: shared items over the larger change's items."
+        },
+        "settle_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The settle window in effect, in nanoseconds: a difference counts once it has lasted longer."
+        },
+        "samples": {
+          "type": "array",
+          "description": "Up to 20 items every cache's change has, taken from each kind of change in turn.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "change": {
+                "type": "string",
+                "enum": [
+                  "vrp_announced",
+                  "vrp_withdrawn",
+                  "aspa_changed"
+                ]
+              },
+              "prefix": {
+                "type": "string",
+                "description": "The VRP's prefix, as the cache sent it (address/length)."
+              },
+              "max_length": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 128,
+                "description": "The VRP's maxLength."
+              },
+              "asn": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295,
+                "description": "The VRP's origin AS."
+              },
+              "customer_asn": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295,
+                "description": "aspa_changed: the customer AS."
+              }
+            },
+            "required": [
+              "change"
+            ],
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "change": {
+                      "enum": [
+                        "vrp_announced",
+                        "vrp_withdrawn"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "change"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "prefix",
+                    "max_length",
+                    "asn"
+                  ]
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "change": {
+                      "const": "aspa_changed"
+                    }
+                  },
+                  "required": [
+                    "change"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "customer_asn"
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      },
+      "required": [
+        "schema_version",
+        "timestamp",
+        "cache",
+        "event_type",
+        "caches",
+        "changes",
+        "overlap",
+        "settle_ns",
+        "samples"
+      ],
+      "additionalProperties": false
     }
   }
 }

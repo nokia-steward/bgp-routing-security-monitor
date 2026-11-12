@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -43,15 +44,22 @@ func parseMonitorRTRVersion(s string) (version uint8, pinned bool, err error) {
 // newMonitorClient builds the monitor's RTR client for cache, at the version
 // --rtr-version (rtrVersion) asks for, recording telemetry to rec.
 func newMonitorClient(cache, transport, rtrVersion string, rec *telemetry.Recorder, log *slog.Logger) (*rtr.Client, error) {
+	// Minimal in-memory stores: NewClient requires them. This command
+	// performs no validation; with several caches the comparison reads
+	// them.
+	return newMonitorClientStores(cache, transport, rtrVersion, store.NewVRPStore(), store.NewASPAStore(), rec, log)
+}
+
+// newMonitorClientStores is newMonitorClient filling the given stores.
+func newMonitorClientStores(cache, transport, rtrVersion string, vrps *store.VRPStore, aspas *store.ASPAStore,
+	rec *telemetry.Recorder, log *slog.Logger) (*rtr.Client, error) {
 	version, pinned, err := parseMonitorRTRVersion(rtrVersion)
 	if err != nil {
 		return nil, err
 	}
-	// Minimal in-memory stores: NewClient requires them, but this command
-	// performs no validation, so they are never queried. tlsCfg is nil:
-	// NewClient only consults it when transport == "tls", and a nil config
-	// falls back to the system root CA pool.
-	client, err := rtr.NewClient(cache, transport, nil, store.NewVRPStore(), store.NewASPAStore(), version, log)
+	// tlsCfg is nil: NewClient only consults it when transport == "tls",
+	// and a nil config falls back to the system root CA pool.
+	client, err := rtr.NewClient(cache, transport, nil, vrps, aspas, version, log)
 	if err != nil {
 		return nil, fmt.Errorf("create RTR client: %w", err)
 	}
@@ -63,8 +71,9 @@ func newMonitorClient(cache, transport, rtrVersion string, rec *telemetry.Record
 // consumeRTREvents feeds every telemetry event from rec to the detector until
 // rec is closed: each anomaly is written as an NDJSON record on the same
 // sink and counted in Prometheus, and observed is called for each sync the
-// baseline took in.
-func consumeRTREvents(rec *telemetry.Recorder, detector *telemetry.Detector, observed func(), log *slog.Logger) {
+// baseline took in. cmp, the comparison of several caches (nil with one),
+// is told of every sync and the anomaly it raised.
+func consumeRTREvents(rec *telemetry.Recorder, detector *telemetry.Detector, cmp *telemetry.CrossCache, observed func(), log *slog.Logger) {
 	for ev := range rec.Events() {
 		anomaly, ok := observeRTREvent(detector, ev, log)
 		if ok && observed != nil {
@@ -75,7 +84,82 @@ func consumeRTREvents(rec *telemetry.Recorder, detector *telemetry.Detector, obs
 			metrics.RTRAnomalyTotal.WithLabelValues(anomaly.Cache, anomaly.Severity).Inc()
 			metrics.RTRAnomalyLastTimestamp.WithLabelValues(anomaly.Cache).Set(float64(anomaly.Timestamp.Unix()))
 		}
+		if cmp != nil && ev.EventType == telemetry.EventSync {
+			cmp.ObserveSync(ev, anomaly)
+		}
 	}
+}
+
+// monitorSet is rtr monitor's RTR clients, one per --cache, each with its
+// own stores, and with several caches their comparison.
+type monitorSet struct {
+	clients []*rtr.Client
+	cmp     *telemetry.CrossCache // nil with one cache
+}
+
+// newMonitorSet builds a client for each of caches, recording telemetry to
+// rec. With more than one cache it wires each client's stores and callbacks
+// to a comparison writing to rec; settle, if above 0, overrides its settle
+// window.
+func newMonitorSet(caches []string, transport, rtrVersion string, settle time.Duration, rec *telemetry.Recorder,
+	log *slog.Logger) (*monitorSet, error) {
+	if len(caches) == 0 {
+		return nil, fmt.Errorf("no --cache given")
+	}
+	ms := &monitorSet{}
+	if len(caches) > 1 {
+		ms.cmp = telemetry.NewCrossCache(rec, settle, func(cache, kind string, n int) {
+			metrics.RTRDivergentItems.WithLabelValues(cache, kind).Set(float64(n))
+		}, log)
+		ms.cmp.OnCompared(func(cache string, compared bool) {
+			v := 0.0
+			if compared {
+				v = 1
+			}
+			metrics.RTRCompared.WithLabelValues(cache).Set(v)
+		})
+	}
+	for _, cache := range caches {
+		vrps, aspas := store.NewVRPStore(), store.NewASPAStore()
+		client, err := newMonitorClientStores(cache, transport, rtrVersion, vrps, aspas, rec, log)
+		if err != nil {
+			return nil, err
+		}
+		if ms.cmp != nil {
+			member, err := ms.cmp.Add(cache, vrps, aspas)
+			if err != nil {
+				return nil, fmt.Errorf("--cache: %w", err)
+			}
+			client.SetOnUpdate(func(d *store.Delta) { member.Update(d, client.Serial()) })
+			client.SetOnSync(func() { member.Synced(client.ProtocolVersion()) })
+			client.SetOnDisconnect(func(telemetry.DisconnectReason) { member.Disconnected() })
+			for _, kind := range telemetry.DivergenceKinds {
+				metrics.RTRDivergentItems.WithLabelValues(cache, kind).Set(0)
+			}
+			metrics.RTRCompared.WithLabelValues(cache).Set(0)
+		}
+		ms.clients = append(ms.clients, client)
+	}
+	return ms, nil
+}
+
+// start runs every client until ctx is cancelled. The returned channel is
+// closed once all of them have returned.
+func (ms *monitorSet) start(ctx context.Context) <-chan struct{} {
+	var wg sync.WaitGroup
+	for _, c := range ms.clients {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.Start(ctx)
+		}()
+	}
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	return done
 }
 
 // rtrMonitorShutdownGrace bounds how long we wait for the RTR client goroutine
@@ -97,7 +181,8 @@ const rtrMonitorSaveEvery = 20
 // config file — every setting comes from flags.
 func newRTRMonitorCmd() *cobra.Command {
 	var (
-		cache           string
+		caches          []string
+		compareSettle   time.Duration
 		logFile         string
 		transport       string
 		prometheus      string
@@ -107,11 +192,15 @@ func newRTRMonitorCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "monitor",
-		Short: "Observe an RTR cache session and log telemetry to NDJSON",
-		Long: `monitor connects to a single RPKI-to-Router (RTR) cache, records session
-lifecycle and sync events as NDJSON, and (optionally) exposes Prometheus
-metrics. It maintains in-memory VRP/ASPA stores solely to drive the RTR
-client; no validation or BMP ingestion happens here.`,
+		Short: "Observe RTR cache sessions and log telemetry to NDJSON",
+		Long: `monitor connects to one or more RPKI-to-Router (RTR) caches (--cache, repeated),
+records session lifecycle and sync events as NDJSON, and (optionally) exposes
+Prometheus metrics. It keeps an in-memory VRP/ASPA set per cache; no
+validation or BMP ingestion happens here.
+
+With several caches it also compares their data after every sync, and reports
+a cache that persistently disagrees with the others (divergence) and a large
+change that reached every cache at once (upstream_change).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			log := initLogger()
 
@@ -120,6 +209,9 @@ client; no validation or BMP ingestion happens here.`,
 			}
 			if _, _, err := parseMonitorRTRVersion(rtrVersion); err != nil {
 				return err
+			}
+			if compareSettle < 0 {
+				return fmt.Errorf("invalid --compare-settle %s: must not be negative", compareSettle)
 			}
 
 			// Open the NDJSON sink for append, creating it if absent.
@@ -147,12 +239,14 @@ client; no validation or BMP ingestion happens here.`,
 				log.Warn("could not load anomaly baseline, starting cold", "path", snapshotPath, "error", err)
 			}
 
-			client, err := newMonitorClient(cache, transport, rtrVersion, rec, log)
+			set, err := newMonitorSet(caches, transport, rtrVersion, compareSettle, rec, log)
 			if err != nil {
 				f.Close()
 				return err
 			}
-			initAnomalyMetrics(cache)
+			for _, cache := range caches {
+				initAnomalyMetrics(cache)
+			}
 
 			// Consume the telemetry event channel: feed sync/structural events to
 			// the detector, emit any resulting anomaly as an NDJSON record on the
@@ -164,7 +258,7 @@ client; no validation or BMP ingestion happens here.`,
 			go func() {
 				defer close(consumerDone)
 				syncsSinceSave := 0
-				consumeRTREvents(rec, detector, func() {
+				consumeRTREvents(rec, detector, set.cmp, func() {
 					syncsSinceSave++
 					if syncsSinceSave >= rtrMonitorSaveEvery {
 						syncsSinceSave = 0
@@ -182,13 +276,14 @@ client; no validation or BMP ingestion happens here.`,
 				startRTRMonitorMetrics(ctx, prometheus, log)
 			}
 
-			done := make(chan struct{})
-			go func() {
-				client.Start(ctx)
-				close(done)
-			}()
+			done := set.start(ctx)
 
-			log.Info("RTR monitor started", "cache", cache, "transport", transport, "rtr_version", rtrVersion, "log_file", logFile)
+			if len(caches) == 1 {
+				log.Info("RTR monitor started", "cache", caches[0], "transport", transport, "rtr_version", rtrVersion, "log_file", logFile)
+			} else {
+				log.Info("RTR monitor started", "caches", caches, "transport", transport, "rtr_version", rtrVersion,
+					"log_file", logFile, "compare_settle", compareSettle)
+			}
 
 			<-ctx.Done()
 			log.Info("shutting down RTR monitor")
@@ -223,7 +318,10 @@ client; no validation or BMP ingestion happens here.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&cache, "cache", "localhost:3323", "RTR cache address")
+	cmd.Flags().StringArrayVar(&caches, "cache", []string{"localhost:3323"},
+		"RTR cache address; repeat to monitor and compare several caches in one process")
+	cmd.Flags().DurationVar(&compareSettle, "compare-settle", 0,
+		"with several caches: how long a difference between them must last to be reported (0: twice the slowest cache's median refresh interval, at least 10m; 30m until intervals are known)")
 	cmd.Flags().StringVar(&logFile, "log-file", "rtr-telemetry.ndjson", "path to NDJSON telemetry output file")
 	cmd.Flags().StringVar(&transport, "transport", "tcp", "RTR transport: tcp or tls")
 	cmd.Flags().StringVar(&prometheus, "prometheus", "", "Prometheus listen address (e.g. :9595); empty disables metrics")

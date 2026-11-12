@@ -10,8 +10,9 @@ import (
 	"time"
 )
 
-// The NDJSON records are SessionEvent and anomalyRecord. Every JSON field of
-// either is in the contract (schema/rtr-monitor-ndjson.v1.json), with the
+// The NDJSON records are SessionEvent, anomalyRecord and the cross-cache
+// comparison's divergenceRecord, divergenceResolvedRecord and
+// upstreamChangeRecord. Every JSON field of each is in the contract (schema/rtr-monitor-ndjson.v1.json), with the
 // JSON type its Go type encodes to, and every field the contract lists is
 // one of theirs. This catches a field added in code, even one no test
 // emits (omitempty); the drift test in internal/cli checks the records
@@ -50,7 +51,8 @@ func TestNDJSONStructsMatchContract(t *testing.T) {
 	}
 
 	code := map[string]string{}
-	for _, rt := range []reflect.Type{reflect.TypeOf(SessionEvent{}), reflect.TypeOf(anomalyRecord{})} {
+	for _, rt := range []reflect.Type{reflect.TypeOf(SessionEvent{}), reflect.TypeOf(anomalyRecord{}),
+		reflect.TypeOf(divergenceRecord{}), reflect.TypeOf(divergenceResolvedRecord{}), reflect.TypeOf(upstreamChangeRecord{})} {
 		for i := range rt.NumField() {
 			f := rt.Field(i)
 			name, _, _ := strings.Cut(f.Tag.Get("json"), ",")

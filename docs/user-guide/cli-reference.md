@@ -1282,7 +1282,7 @@ raven rtr
 
 | Command | Description |
 |---|---|
-| `raven rtr monitor` | Observe an RTR cache session, log telemetry to NDJSON, and detect anomalies |
+| `raven rtr monitor` | Observe one or more RTR cache sessions, log telemetry to NDJSON, detect anomalies, and compare caches |
 | `raven rtr seed-baseline` | Build an anomaly-detector baseline snapshot from recorded telemetry |
 
 These commands are **standalone** — they connect directly to an RTR cache and
@@ -1292,17 +1292,18 @@ do not require a running `raven serve` daemon or a config file.
 
 ## raven rtr monitor
 
-Connect to a single RTR cache, record session lifecycle and sync events as
-NDJSON, and run the adaptive anomaly detector over the sync stream. It keeps
-in-memory VRP/ASPA stores only to drive the RTR client — no BMP ingestion or
-route validation happens here. Every setting comes from flags; no config file
-is read.
+Connect to one or more RTR caches, record session lifecycle and sync events
+as NDJSON, and run the adaptive anomaly detector over the sync stream. It
+keeps an in-memory VRP/ASPA set per cache — no BMP ingestion or route
+validation happens here. Every setting comes from flags; no config file is
+read.
 
 ```bash
 raven rtr monitor --cache localhost:3323 --log-file rtr-telemetry.ndjson
 raven rtr monitor --cache rpki.example.com:3323 --transport tls
 raven rtr monitor --log-file /tmp/rtr.ndjson --prometheus :9595
 raven rtr monitor --anomaly-snapshot ~/.raven/anomaly-baseline.json --prometheus :9595
+raven rtr monitor --cache routinator.example.net:3323 --cache fort.example.net:323 --cache rpki-client.example.net:8282
 ```
 
 Runs in the foreground until you press Ctrl+C.
@@ -1318,7 +1319,8 @@ the compatibility policy. Build parsers against that page.
 
 | Flag | Default | Description |
 |---|---|---|
-| `--cache` | `localhost:3323` | RTR cache address |
+| `--cache` | `localhost:3323` | RTR cache address. Repeat to monitor several caches in one process and compare them (see below); each gets its own session, data set, anomaly baseline and NDJSON records |
+| `--compare-settle` | `0` (automatic) | With several caches: how long a difference between them must last before it is reported. Automatic: twice the slowest cache's median refresh interval, at least `10m`, and `30m` until every cache's interval is known |
 | `--log-file` | `rtr-telemetry.ndjson` | Path to the NDJSON telemetry output file (created if absent, appended if present) |
 | `--transport` | `tcp` | RTR transport: `tcp` or `tls` |
 | `--rtr-version` | `auto` | RTR protocol version. `auto` starts at 2 and falls back one version at a time (2, 1, 0) when the cache rejects one with Error Report code 4 or closes the connection before answering; `0`, `1` or `2` pins the session to that version, with no fallback and no re-probe |
@@ -1344,10 +1346,49 @@ the compatibility policy. Build parsers against that page.
 - The baseline is saved periodically and again on graceful shutdown, so a
   restarted monitor resumes from where it left off.
 
+**Comparing several caches:** with more than one `--cache`, the monitor
+compares the caches' VRP and ASPA sets after every sync, to tell a problem
+upstream of every validator (every cache loses the same objects at once)
+from a problem at one validator (stuck, behind, misconfigured):
+
+- A cache that persistently disagrees with the others (longer than the
+  settle window) gets one `divergence` record for the episode, saying per
+  kind how many VRPs or ASPA customers it is **missing** (the majority has
+  them), has **extra** (only a minority has them), or is **split** on (no
+  majority, as with two caches), with up to 20 samples; and one
+  `divergence_resolved` when it agrees again. Caches below RTR version 2 are
+  compared on VRPs only, and a disconnected cache is left out until it
+  syncs again.
+- The same large change (one that trips the anomaly detector) at every
+  cache within the settle window is one `upstream_change` record, alongside
+  each cache's `anomaly`. A large change at one cache only is never called
+  upstream.
+- `upstream_change` needs a warmed-up anomaly detector at every compared
+  cache: 100 incremental syncs each (about 17 hours at a 10-minute refresh
+  interval), unless `--anomaly-snapshot` holds a baseline for each `--cache`
+  or one was seeded with `raven rtr seed-baseline`. After a fresh start, a
+  real upstream event shows only as per-cache `anomaly` records.
+- Caches with different Trust Anchor sets or local exceptions (SLURM) hold
+  different data on purpose and show a standing divergence that never
+  resolves, by design.
+- Memory: about 316 MB per cache at 1M VRPs, of which about 80 MB is the
+  comparison's copy of the cache's set (the rest is the VRP store the
+  session needs anyway).
+- With `--prometheus`, `raven_rtr_divergent_items{cache,kind}` is the
+  number of items each cache persistently disagrees on, and
+  `raven_rtr_compared{cache}` is 1 while the cache is in the comparison.
+  The item counts keep their last values while a cache is out of it; see
+  [Observability](observability.md) for an alert that joins the two.
+
+The details are in
+[Telemetry NDJSON → Comparing caches](../reference/telemetry-ndjson.md#comparing-caches).
+With a single `--cache` none of this runs and the output is as before.
+
 **Watching for anomalies live:**
 
 ```bash
 tail -f rtr-telemetry.ndjson | grep '"event_type":"anomaly"'
+tail -f rtr-telemetry.ndjson | grep -E '"event_type":"(divergence|divergence_resolved|upstream_change)"'
 ```
 
 ---

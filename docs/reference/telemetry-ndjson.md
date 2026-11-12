@@ -2,7 +2,9 @@
 
 `raven rtr monitor` writes one JSON object per line (NDJSON) to `--log-file`:
 the RTR session's lifecycle, every completed sync, and every anomaly the
-detector finds. This page is the contract for that output: what each record
+detector finds. Run against several caches (`--cache` repeated), it writes
+each cache's records to the same file, told apart by `cache`, and adds the
+records of its [comparison of the caches](#comparing-caches). This page is the contract for that output: what each record
 type means, its fields, and what may change. Tools that parse the stream,
 such as [ASPA Explorer](https://aspa.ping6.it/statistics.html#rtr-title),
 build against it.
@@ -55,7 +57,9 @@ This page describes `schema_version` 1.
 - Records are written in the order the events happen, with one exception:
   an `anomaly` record is written by the detector, which runs alongside the
   session, so it can come after records that followed the one it is about.
-  It has that record's `timestamp` and `cache`; match on those.
+  It has that record's `timestamp` and `cache`; match on those. An
+  `upstream_change` is written by the same detector path, so it can come
+  late in the same way.
 - Strings are JSON-escaped by Go's encoder: `<`, `>` and `&` appear as
   `\u003c`, `\u003e`, `\u0026`. Use a JSON parser, not text matching.
 - Durations are integers in nanoseconds (`*_ns`). Counts are integers.
@@ -66,10 +70,11 @@ This page describes `schema_version` 1.
 |---|---|---|
 | `schema_version` | integer | `1` |
 | `timestamp` | string | When the event happened: RFC 3339 with up to nanosecond precision (trailing zeros trimmed) and a UTC offset, which consumers must honor. RAVEN writes UTC (`2026-11-11T21:06:49.0886Z`) from this release; files from older releases may carry the monitor host's local offset (`2026-11-11T13:06:49.0886-08:00`) |
-| `cache` | string | The RTR cache, exactly as given to `--cache` (`host:port`) |
+| `cache` | string | The RTR cache, exactly as given to `--cache` (`host:port`). On the comparison records, the cache the record is about (`divergence`, `divergence_resolved`) or whose sync completed the match (`upstream_change`) |
 | `event_type` | string | The record type: one of the sections below |
 
-Every record type except `anomaly` also has:
+Every record type except `anomaly` and the comparison records
+(`divergence`, `divergence_resolved`, `upstream_change`) also has:
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -228,6 +233,153 @@ an incremental `sync` whose metrics are far outside this cache's normal
 {"timestamp":"2026-11-11T21:06:49.10142665Z","cache":"rtr.example.net:3323","event_type":"anomaly","schema_version":1,"category":"structural","trigger":"cache_reset","severity":"high"}
 ```
 
+## Comparing caches
+
+With more than one `--cache`, the monitor keeps each cache's VRP and ASPA
+set apart and compares them after every End of Data from any cache. It
+writes three more record types; with a single `--cache` it writes none of
+them, and the rest of the output is unchanged.
+
+**Which caches are compared:** those connected that have completed at
+least one sync in their current session. A cache that disconnects leaves the
+comparison and rejoins after the first sync of its next session. ASPA sets
+are compared only among caches at RTR version 2; a cache at version 0 or 1
+is compared on VRPs only.
+
+**What is compared:** VRPs by prefix, maxLength and origin AS; ASPAs by
+customer AS, comparing provider sets. An item some compared caches hold and
+others do not (for ASPA: a customer whose provider set differs) is a
+difference. It is classified by who holds it:
+
+- held by a majority of the compared caches: **missing** at the caches
+  that lack it
+- held by a minority: **extra** at the caches that hold it
+- no majority (two caches, or an even split): **split**, at every compared
+  cache, naming both sides
+
+For ASPA, the majority is a majority of caches holding the same provider
+set; a cache in the minority with no record for the customer is
+`aspa_missing`, one with a record where the majority has none `aspa_extra`,
+one with a different set `aspa_mismatch`.
+
+**The settle window:** a difference counts only once it has lasted longer
+than the settle window with the same shape (the same compared caches, the
+same holders), so a cache that is merely a poll behind is never reported.
+The window is twice the slowest compared cache's refresh interval (the
+median of its last 15 `interval_since_ns`), at least 10 minutes; until every
+compared cache has an interval, it is 30 minutes. `--compare-settle`
+replaces it. Differences are checked at each End of Data, so one is reported
+at the first sync after it settles.
+
+**Episodes:** a cache's persistent differences are reported per episode,
+not per item: one `divergence` when its first difference settles, and one
+`divergence_resolved` when it has no difference left at all (settled or
+not). A cache out of the comparison keeps its episode open until it rejoins.
+
+**Upstream changes:** a change that trips the anomaly detector (a
+statistical anomaly on a VRP or ASPA count) at every compared cache within
+the settle window, with the changes overlapping by at least 90% (shared
+items over the larger change's items), is a change upstream of every
+validator, such as a repository losing objects. It is written once, as
+`upstream_change`; each cache's `anomaly` is still written. A large change
+seen at one cache only is never upstream: if it lasts, it is a divergence at
+that cache.
+
+**Upstream changes need a warmed-up detector at every compared cache.** The
+detector scores a sync only once it has seen 100 incremental syncs of that
+cache (full syncs do not count): about 17 hours at a 10-minute refresh
+interval, 8 at 5 minutes. Until every compared cache is past that, a real
+upstream event is not recognised as one: it shows as an `anomaly` at the
+caches that are warm and nothing at the others, never as `upstream_change`.
+A baseline saved by an earlier run (`--anomaly-snapshot`) or seeded from
+recorded NDJSON (`raven rtr seed-baseline`) skips the warm-up; the baseline
+is kept per cache address, so it applies only to caches given by the same
+`--cache` string.
+
+**Standing divergences by design:** the comparison assumes the caches
+should hold the same data. Caches that validate against different Trust
+Anchor sets, or apply different local exceptions (SLURM, RFC 8416, filters
+and assertions), hold different data on purpose, and the monitor reports
+that difference as a divergence that never resolves: for example
+`vrp_extra` at the only cache with a SLURM assertion, or `vrp_missing` at a
+cache that lacks a TAL the others have. Compare caches with the same TALs
+and exceptions, or expect those episodes.
+
+**Memory:** each cache costs about 316 MB at 1M VRPs: about 236 MB for its
+VRP store (which the RTR session needs with or without comparison) and
+about 80 MB for the comparison's own copy of its set. The copy exists only
+with more than one `--cache`; ASPA adds little at today's sizes.
+
+### `divergence`
+
+A cache's first persistent difference settled: a divergence episode began.
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `episode` | integer | always | The episode's number at this cache, from 1, in this process |
+| `started_at` | string | always | When the episode's earliest difference first appeared in its current shape (RFC 3339, UTC) |
+| `compared` | array of strings | always | The caches compared, in `--cache` order |
+| `settle_ns` | integer | always | The settle window in effect, in nanoseconds |
+| `counts` | object | always | Persistent differences attributed to this cache, by [kind](#divergence-kind); only kinds with at least one |
+| `samples` | array of objects | always | Up to 20 of those differences, taken from each kind in turn, sorted by kind and item (below) |
+| `split_with` | array of strings | with a split kind | The caches on the other side of the split items |
+
+Each sample:
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `kind` | string | always | The [kind](#divergence-kind) |
+| `prefix` | string | VRP kinds | The VRP's prefix, as the cache sent it |
+| `max_length` | integer | VRP kinds | The VRP's maxLength |
+| `asn` | integer | VRP kinds | The VRP's origin AS |
+| `customer_asn` | integer | ASPA kinds | The customer AS |
+| `providers` | array of integers | ASPA kinds, when this cache has a record | This cache's provider set, sorted |
+| `majority_providers` | array of integers | ASPA kinds with a majority that has a record | The majority's provider set, sorted |
+| `agree` | array of strings | always | The compared caches that hold what this cache holds for the item, it included |
+| `disagree` | array of strings | always | The others |
+
+```json
+{"timestamp":"2026-11-12T03:34:36.860743886Z","cache":"rtr-c.example.net:3323","event_type":"divergence","schema_version":1,"episode":1,"started_at":"2026-11-12T03:34:35.957205531Z","compared":["rtr-a.example.net:3323","rtr-b.example.net:3323","rtr-c.example.net:3323"],"settle_ns":750000000,"counts":{"aspa_mismatch":1,"aspa_missing":1,"aspa_split":1,"vrp_missing":2},"samples":[{"kind":"vrp_missing","prefix":"10.0.0.0/24","max_length":24,"asn":65001,"agree":["rtr-c.example.net:3323"],"disagree":["rtr-a.example.net:3323","rtr-b.example.net:3323"]},{"kind":"vrp_missing","prefix":"10.0.0.1/24","max_length":24,"asn":65001,"agree":["rtr-c.example.net:3323"],"disagree":["rtr-a.example.net:3323","rtr-b.example.net:3323"]},{"kind":"aspa_missing","customer_asn":64510,"majority_providers":[64511],"agree":["rtr-c.example.net:3323"],"disagree":["rtr-a.example.net:3323","rtr-b.example.net:3323"]},{"kind":"aspa_mismatch","customer_asn":64500,"providers":[64501],"majority_providers":[64501,64502],"agree":["rtr-c.example.net:3323"],"disagree":["rtr-a.example.net:3323","rtr-b.example.net:3323"]},{"kind":"aspa_split","customer_asn":64530,"providers":[3],"agree":["rtr-c.example.net:3323"],"disagree":["rtr-a.example.net:3323","rtr-b.example.net:3323"]}],"split_with":["rtr-a.example.net:3323","rtr-b.example.net:3323"]}
+{"timestamp":"2026-11-12T03:34:36.830638224Z","cache":"rtr-a.example.net:3323","event_type":"divergence","schema_version":1,"episode":1,"started_at":"2026-11-12T03:34:35.928699408Z","compared":["rtr-a.example.net:3323","rtr-b.example.net:3323"],"settle_ns":750000000,"counts":{"aspa_split":1,"vrp_split":5},"samples":[{"kind":"vrp_split","prefix":"10.0.19.136/24","max_length":24,"asn":65002,"agree":["rtr-a.example.net:3323"],"disagree":["rtr-b.example.net:3323"]},{"kind":"vrp_split","prefix":"10.0.19.137/24","max_length":24,"asn":65002,"agree":["rtr-a.example.net:3323"],"disagree":["rtr-b.example.net:3323"]},{"kind":"vrp_split","prefix":"10.0.19.138/24","max_length":24,"asn":65002,"agree":["rtr-a.example.net:3323"],"disagree":["rtr-b.example.net:3323"]},{"kind":"vrp_split","prefix":"10.0.19.139/24","max_length":24,"asn":65002,"agree":["rtr-a.example.net:3323"],"disagree":["rtr-b.example.net:3323"]},{"kind":"vrp_split","prefix":"10.0.19.140/24","max_length":24,"asn":65002,"agree":["rtr-a.example.net:3323"],"disagree":["rtr-b.example.net:3323"]},{"kind":"aspa_split","customer_asn":64500,"providers":[1],"agree":["rtr-a.example.net:3323"],"disagree":["rtr-b.example.net:3323"]}],"split_with":["rtr-b.example.net:3323"]}
+```
+
+The second example compares two caches: with no majority, each gets its own
+`divergence` with the same items as `vrp_split`.
+
+### `divergence_resolved`
+
+A divergence episode ended: the cache no longer disagrees with the other
+compared caches on anything.
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `episode` | integer | always | The episode that ended |
+| `started_at` | string | always | The episode's `started_at` |
+| `duration_ns` | integer | always | Nanoseconds from `started_at` to this record |
+| `compared` | array of strings | always | The caches compared, in `--cache` order |
+
+```json
+{"timestamp":"2026-11-12T03:34:36.875279716Z","cache":"rtr-b.example.net:3323","event_type":"divergence_resolved","schema_version":1,"episode":1,"started_at":"2026-11-12T03:34:35.957205531Z","duration_ns":918074185,"compared":["rtr-a.example.net:3323","rtr-b.example.net:3323","rtr-c.example.net:3323"]}
+```
+
+### `upstream_change`
+
+The same large change reached every compared cache within the settle
+window: a change upstream of the validators. One record for the change; each
+cache's `anomaly` record is written as well.
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `caches` | array of strings | always | The caches the change reached: every compared cache, in `--cache` order |
+| `changes` | array of objects | always | Each cache's sync that carried it, in `--cache` order: `cache`, `serial`, `timestamp`, and its `vrp_announced`, `vrp_withdrawn` and `aspa_changed` (customer ASes whose record changed) counts |
+| `overlap` | number | always | The least overlap between the completing cache's change and another's: shared items over the larger change's items, 0.9 to 1 |
+| `settle_ns` | integer | always | The settle window in effect, in nanoseconds |
+| `samples` | array of objects | always | Up to 20 items every cache's change has, taken from each kind of change in turn: `change` ([below](#upstream-change)), and `prefix`, `max_length`, `asn` for a VRP or `customer_asn` for an ASPA |
+
+```json
+{"timestamp":"2026-11-12T03:34:36.918629637Z","cache":"rtr-c.example.net:3323","event_type":"upstream_change","schema_version":1,"caches":["rtr-a.example.net:3323","rtr-b.example.net:3323","rtr-c.example.net:3323"],"changes":[{"cache":"rtr-a.example.net:3323","serial":2,"timestamp":"2026-11-12T03:34:36.889320219Z","vrp_announced":1200,"vrp_withdrawn":3,"aspa_changed":1},{"cache":"rtr-b.example.net:3323","serial":1,"timestamp":"2026-11-12T03:34:36.903863861Z","vrp_announced":1200,"vrp_withdrawn":3,"aspa_changed":1},{"cache":"rtr-c.example.net:3323","serial":3,"timestamp":"2026-11-12T03:34:36.915758512Z","vrp_announced":1200,"vrp_withdrawn":3,"aspa_changed":1}],"overlap":1,"settle_ns":750000000,"samples":[{"change":"vrp_announced","prefix":"10.0.39.16/24","max_length":24,"asn":65004},{"change":"vrp_announced","prefix":"10.0.39.17/24","max_length":24,"asn":65004},{"change":"vrp_announced","prefix":"10.0.39.18/24","max_length":24,"asn":65004},{"change":"vrp_announced","prefix":"10.0.39.19/24","max_length":24,"asn":65004},{"change":"vrp_announced","prefix":"10.0.39.20/24","max_length":24,"asn":65004},{"change":"vrp_announced","prefix":"10.0.39.21/24","max_length":24,"asn":65004},{"change":"vrp_announced","prefix":"10.0.39.22/24","max_length":24,"asn":65004},{"change":"vrp_announced","prefix":"10.0.39.23/24","max_length":24,"asn":65004},{"change":"vrp_announced","prefix":"10.0.39.24/24","max_length":24,"asn":65004},{"change":"vrp_announced","prefix":"10.0.39.25/24","max_length":24,"asn":65004},{"change":"vrp_announced","prefix":"10.0.39.26/24","max_length":24,"asn":65004},{"change":"vrp_announced","prefix":"10.0.39.27/24","max_length":24,"asn":65004},{"change":"vrp_announced","prefix":"10.0.39.28/24","max_length":24,"asn":65004},{"change":"vrp_announced","prefix":"10.0.39.29/24","max_length":24,"asn":65004},{"change":"vrp_announced","prefix":"10.0.39.30/24","max_length":24,"asn":65004},{"change":"vrp_announced","prefix":"10.0.39.31/24","max_length":24,"asn":65004},{"change":"vrp_withdrawn","prefix":"10.0.0.10/24","max_length":24,"asn":65001},{"change":"vrp_withdrawn","prefix":"10.0.0.11/24","max_length":24,"asn":65001},{"change":"vrp_withdrawn","prefix":"10.0.0.12/24","max_length":24,"asn":65001},{"change":"aspa_changed","customer_asn":64540}]}
+```
+
 ## Enums
 
 ### `disconnect_reason`
@@ -265,6 +417,28 @@ The metrics the detector scores, as keys of `z_scores` and `raw` and in
 `trigger`, in this order: `interval_since_ns`, `sync_duration_ns`,
 `vrp_announced`, `vrp_withdrawn`, `aspa_announced`, `aspa_withdrawn`. They
 are the `sync` fields of the same names.
+
+### Divergence kind
+
+The keys of `counts`, the `kind` of a `divergence` sample, and the `kind`
+label of `raven_rtr_divergent_items`, in this order. See
+[Comparing caches](#comparing-caches).
+
+| Value | Meaning |
+|---|---|
+| `vrp_missing` | A VRP a majority of the compared caches hold, and this cache does not |
+| `vrp_extra` | A VRP this cache and a minority hold |
+| `vrp_split` | A VRP held by exactly half the compared caches |
+| `aspa_missing` | A customer AS this cache has no record for, where the majority has one |
+| `aspa_extra` | A customer AS this cache has a record for, where the majority has none |
+| `aspa_mismatch` | A customer AS whose provider set at this cache differs from the majority's |
+| `aspa_split` | A customer AS on whose provider set no majority of the compared caches agrees |
+
+### Upstream change
+
+The `change` of an `upstream_change` sample: `vrp_announced`,
+`vrp_withdrawn`, `aspa_changed` (the customer AS's record was added,
+removed or changed).
 
 ## Other files
 
