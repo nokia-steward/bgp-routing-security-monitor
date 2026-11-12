@@ -123,6 +123,21 @@ func (r *Recorder) RecordAnomaly(ev *AnomalyEvent) {
 	r.mu.Unlock()
 }
 
+// write writes rec, a cross-cache comparison record of type eventType about
+// cache, as one NDJSON line, serialized with every other record. Like
+// RecordAnomaly it does not echo onto the event channel. Safe on a nil
+// Recorder (no-op).
+func (r *Recorder) write(rec any, cache, eventType string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	if err := r.enc.Encode(rec); err != nil {
+		r.log.Error("failed to write comparison record", "error", err, "cache", cache, "event_type", eventType)
+	}
+	r.mu.Unlock()
+}
+
 // anomalyTrigger derives the record's trigger string. On a correlated trip the
 // detector sets Trigger == "correlated"; the record instead lists the metrics
 // that crossed the soft threshold, joined with "+" in canonical order for

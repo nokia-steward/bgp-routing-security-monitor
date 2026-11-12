@@ -5,6 +5,22 @@ All notable changes to RAVEN are recorded here.
 ## Unreleased
 
 ### Added
+- `raven rtr monitor` watches several caches in one process: `--cache` may
+  be given more than once. Each cache keeps its own session, VRP/ASPA set,
+  anomaly baseline and NDJSON records (told apart by `cache`). After every
+  sync the monitor compares the caches (VRPs by prefix, maxLength and AS;
+  ASPAs by customer AS and provider set, among caches at RTR version 2), and
+  reports a cache that persistently disagrees with the others as one
+  `divergence` record per episode (missing, extra or split, per kind, with up
+  to 20 samples) and a `divergence_resolved` when it agrees again; and the
+  same large change at every cache at once as one `upstream_change`. A
+  difference counts once it outlasts the settle window: twice the slowest
+  cache's median refresh interval, at least 10 minutes, 30 minutes until
+  intervals are known, or `--compare-settle`. New gauges
+  `raven_rtr_divergent_items{cache,kind}` and `raven_rtr_compared{cache}`
+  (1 while the cache is in the comparison). Additive to NDJSON schema version
+  1: three new record types, no existing field changed. With one `--cache`
+  the output is unchanged.
 - `schema_version` (integer, `1`) on every record `raven rtr monitor` writes
   to its NDJSON, and a documented contract for that output: the reference
   page `docs/reference/telemetry-ndjson.md` (every record

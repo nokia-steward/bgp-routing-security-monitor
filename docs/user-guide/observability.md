@@ -324,6 +324,44 @@ raven_rtr_anomaly_total{cache="localhost:3323", severity="high"}     # Count of 
 raven_rtr_anomaly_last_timestamp{cache="localhost:3323"}             # Unix timestamp of most recent anomaly
 ```
 
+**RTR cache comparison:**
+
+Emitted by `raven rtr monitor` run with several `--cache` and
+`--prometheus`: per cache and
+[divergence kind](../reference/telemetry-ndjson.md#divergence-kind), the
+items (VRPs, ASPA customer ASes) the cache has disagreed with the other
+compared caches on for longer than the settle window; and whether the cache
+is in the comparison at all. Both are exported at 0 for every cache (and
+kind) from startup. Neither is exported with a single `--cache`.
+
+```text
+raven_rtr_divergent_items{cache="fort.example.net:323", kind="vrp_missing"}   # Persistent differences attributed to the cache
+raven_rtr_compared{cache="fort.example.net:323"}                              # 1 while in the comparison, 0 otherwise
+```
+
+`raven_rtr_compared` is 1 while the cache is connected and has completed a
+sync in its current session, and 0 otherwise: from startup until its first
+sync, and from a disconnect until the first sync of its next session.
+
+**`raven_rtr_divergent_items` keeps its last values while a cache is out of
+the comparison** (`raven_rtr_compared` 0): a disconnected cache is not
+compared, so its count is neither updated nor reset until it rejoins. Join
+the two so an alert speaks only of caches compared now:
+
+```yaml
+- alert: RTRCacheDiverges
+  expr: |
+    (sum by (cache) (raven_rtr_divergent_items) > 0)
+      and on (cache) (raven_rtr_compared == 1)
+  for: 5m
+  annotations:
+    summary: "RTR cache {{ $labels.cache }} persistently disagrees with the other caches"
+```
+
+The settle window already delays a divergence past normal lag, so `for`
+only needs to cover scrape jitter. Alert on `raven_rtr_compared == 0`
+separately if a cache dropping out of the comparison matters on its own.
+
 **External global-visibility correlation:**
 
 Emitted when the Event Engine's `global-correlate` action runs, which requires

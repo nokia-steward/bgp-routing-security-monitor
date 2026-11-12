@@ -100,6 +100,22 @@ var (
 		Help: "Unix timestamp of the most recent RTR anomaly detected.",
 	}, []string{"cache"})
 
+	// raven rtr monitor with several caches: the items a cache has disagreed
+	// with the other compared caches on for longer than the settle window,
+	// attributed to it. Labels: cache, kind (telemetry.DivergenceKinds).
+	RTRDivergentItems = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "raven_rtr_divergent_items",
+		Help: "Items (VRPs, ASPA customer ASes) a cache persistently disagrees with the other compared RTR caches on, by kind (raven rtr monitor with several --cache).",
+	}, []string{"cache", "kind"})
+
+	// raven rtr monitor with several caches: 1 while the cache is in the
+	// comparison (connected, and synced in its current session), 0
+	// otherwise. Label: cache.
+	RTRCompared = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "raven_rtr_compared",
+		Help: "1 while the RTR cache is in the cross-cache comparison (connected and synced in its current session), 0 otherwise (raven rtr monitor with several --cache).",
+	}, []string{"cache"})
+
 	// Route counts by security posture, AFI and RIB: the routes the routers
 	// receive (rib adj-rib-in-pre, adj-rib-in-post) and select (loc-rib),
 	// each RIB apart, so that a route reported in two RIBs is never added

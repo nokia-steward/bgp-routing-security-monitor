@@ -20,7 +20,7 @@ import (
 //	$defs $ref (local, "#/$defs/name")
 //	oneOf allOf if then
 //	type const enum
-//	required properties additionalProperties propertyNames
+//	required properties additionalProperties propertyNames items
 //	pattern minimum maximum
 //
 // and rejects a schema that uses any other keyword, so the schema can never
@@ -35,6 +35,7 @@ var knownKeywords = map[string]bool{
 	"$defs": true, "$ref": true, "oneOf": true, "allOf": true, "if": true, "then": true,
 	"type": true, "const": true, "enum": true,
 	"required": true, "properties": true, "additionalProperties": true, "propertyNames": true,
+	"items":   true,
 	"pattern": true, "minimum": true, "maximum": true,
 }
 
@@ -78,7 +79,7 @@ func (s *jsonSchema) checkKeywords(node map[string]any, at string) []string {
 			for i, sub := range v.([]any) {
 				errs = append(errs, s.checkKeywords(sub.(map[string]any), fmt.Sprintf("%s/%s/%d", at, k, i))...)
 			}
-		case "if", "then", "propertyNames":
+		case "if", "then", "propertyNames", "items":
 			errs = append(errs, s.checkKeywords(v.(map[string]any), at+"/"+k)...)
 		case "additionalProperties":
 			if sub, ok := v.(map[string]any); ok {
@@ -180,6 +181,13 @@ func (s *jsonSchema) validate(v any, schema map[string]any, at string) []string 
 		if m, ok := schema["maximum"].(json.Number); ok {
 			if max, _ := m.Float64(); f > max {
 				fail("%v above maximum %v", n, m)
+			}
+		}
+	}
+	if arr, ok := v.([]any); ok {
+		if items, ok := schema["items"].(map[string]any); ok {
+			for i, x := range arr {
+				errs = append(errs, s.validate(x, items, fmt.Sprintf("%s[%d]", at, i))...)
 			}
 		}
 	}
@@ -303,6 +311,8 @@ func TestJSONSchemaSubsetChecker(t *testing.T) {
 		"conditional field": `{"timestamp":"2026-11-11T10:00:00Z","cache":"c:323","event_type":"disconnected","schema_version":1,"proto_version":2,"disconnect_reason":"error_report"}`,
 		"pattern":           `{"timestamp":"2026-11-11T10:00:00Z","cache":"c:323","event_type":"anomaly","schema_version":1,"category":"statistical","trigger":"vrp_total","severity":"high","z_scores":{},"raw":{}}`,
 		"map key":           `{"timestamp":"2026-11-11T10:00:00Z","cache":"c:323","event_type":"anomaly","schema_version":1,"category":"statistical","trigger":"vrp_announced","severity":"high","z_scores":{"vrp_total":9},"raw":{}}`,
+		"array item":        `{"timestamp":"2026-11-11T10:00:00Z","cache":"c:323","event_type":"divergence_resolved","schema_version":1,"episode":1,"started_at":"2026-11-11T09:00:00Z","duration_ns":1,"compared":["c:323",4]}`,
+		"array item field":  `{"timestamp":"2026-11-11T10:00:00Z","cache":"c:323","event_type":"divergence","schema_version":1,"episode":1,"started_at":"2026-11-11T09:00:00Z","compared":["c:323","d:323"],"settle_ns":1,"counts":{"vrp_missing":1},"samples":[{"kind":"vrp_missing","agree":["c:323"],"disagree":["d:323"]}]}`,
 	} {
 		if errs := s.validate(decode(line), s.root, "line"); len(errs) == 0 {
 			t.Errorf("%s: invalid record accepted: %s", name, line)

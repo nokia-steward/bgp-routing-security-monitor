@@ -52,7 +52,7 @@ func runMonitorWith(t *testing.T, srv *rtrtest.Server, rtrVersion string, config
 	consumed := make(chan struct{})
 	go func() {
 		defer close(consumed)
-		consumeRTREvents(rec, detector, nil, quiet)
+		consumeRTREvents(rec, detector, nil, nil, quiet)
 	}()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

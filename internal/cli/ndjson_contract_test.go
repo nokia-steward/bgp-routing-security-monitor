@@ -19,11 +19,19 @@ import (
 // ndjsonSchemaPath is the NDJSON contract (docs/reference/telemetry-ndjson.md).
 const ndjsonSchemaPath = "../../schema/rtr-monitor-ndjson.v1.json"
 
-// warmDetector returns a detector whose windows for cache are past warm-up
+// warmDetector returns a detector whose windows for each cache are past warm-up
 // with a quiet baseline: a ~600 s cadence, ~100 ms syncs, a few VRPs per
 // sync. A sync of 1,200 VRPs is then a statistical anomaly.
-func warmDetector(cache string) *telemetry.Detector {
+func warmDetector(caches ...string) *telemetry.Detector {
 	d := telemetry.NewDetector(telemetry.DefaultAnomalyConfig())
+	for _, cache := range caches {
+		warmCache(d, cache)
+	}
+	return d
+}
+
+// warmCache gives d warmDetector's baseline for cache.
+func warmCache(d *telemetry.Detector, cache string) {
 	base := time.Now().Add(-48 * time.Hour)
 	for i := range 150 {
 		d.ObserveSyncTotals(cache, base.Add(time.Duration(i)*10*time.Minute), map[string]float64{
@@ -35,7 +43,6 @@ func warmDetector(cache string) *telemetry.Detector {
 			telemetry.MetricASPAWithdrawn: 0,
 		}, telemetry.Totals{VRPs: 1250, ASPAs: 2})
 	}
-	return d
 }
 
 // waitDisconnect waits for a disconnected record with the given reason.
@@ -143,6 +150,56 @@ var contractScenarios = map[string]func(t *testing.T) string{
 		m.stop()
 		return m.ndjson.String()
 	},
+	// Three caches compared: divergence with every kind a majority allows
+	// (vrp_missing, vrp_extra, aspa_missing, aspa_extra, aspa_mismatch) and
+	// aspa_split, divergence_resolved, and an upstream_change carrying every
+	// kind of change.
+	"three caches compared": func(t *testing.T) string {
+		s := newCaches(t, 2, 2, 2)
+		a, b, c := s[0], s[1], s[2]
+		a.SetData(append(slices.Clone(baseVRPs), rtrtest.GenVRPs(6000, 2, 65003)...), []rtrtest.ASPASet{
+			{Customer: 64500, Providers: []uint32{64501, 64502}}, {Customer: 64510, Providers: []uint32{64511}},
+			{Customer: 64520, Providers: []uint32{64521}}, {Customer: 64530, Providers: []uint32{1}},
+		})
+		b.SetData(baseVRPs, []rtrtest.ASPASet{
+			{Customer: 64500, Providers: []uint32{64501, 64502}}, {Customer: 64510, Providers: []uint32{64511}},
+			{Customer: 64530, Providers: []uint32{2}},
+		})
+		c.SetData(baseVRPs[2:], []rtrtest.ASPASet{
+			{Customer: 64500, Providers: []uint32{64501}}, {Customer: 64530, Providers: []uint32{3}},
+		})
+		r := runCompare(t, s, testSettle, warmDetector(addrs(s...)...))
+		outlast()
+		r.tick(t, a)
+		r.waitRecords(t, "divergence", 3)
+		// b's only difference is the three-way split on 64530: c takes
+		// b's provider set, and b agrees with the majority again.
+		r.advance(t, c, rtrtest.Delta{WithdrawASPAs: []uint32{64530}})
+		r.advance(t, c, rtrtest.Delta{AnnounceASPAs: []rtrtest.ASPASet{{Customer: 64530, Providers: []uint32{2}}}})
+		r.waitRecords(t, "divergence_resolved", 1)
+		big := rtrtest.Delta{
+			AnnounceVRPs: rtrtest.GenVRPs(10000, 1200, 65004), WithdrawVRPs: rtrtest.GenVRPs(10, 3, 65001),
+			AnnounceASPAs: []rtrtest.ASPASet{{Customer: 64540, Providers: []uint32{64541}}},
+		}
+		for _, srv := range s {
+			r.advance(t, srv, big)
+		}
+		r.waitRecords(t, "upstream_change", 1)
+		r.stop()
+		return r.ndjson.String()
+	},
+	// Two caches compared: no majority, so vrp_split and aspa_split.
+	"two caches compared": func(t *testing.T) string {
+		s := newCaches(t, 2, 2)
+		s[0].SetData(append(slices.Clone(baseVRPs), extraVRPs...), []rtrtest.ASPASet{{Customer: 64500, Providers: []uint32{1}}})
+		s[1].SetData(baseVRPs, []rtrtest.ASPASet{{Customer: 64500, Providers: []uint32{2}}})
+		r := runCompare(t, s, testSettle, telemetry.NewDetector(telemetry.DefaultAnomalyConfig()))
+		outlast()
+		r.tick(t, s[0])
+		r.waitRecords(t, "divergence", 2)
+		r.stop()
+		return r.ndjson.String()
+	},
 	// disconnected (error): pinned to 2, the cache answers at 1.
 	"pinned, answered at another version": func(t *testing.T) string {
 		cfg := monitorCache(1)
@@ -224,6 +281,23 @@ func TestNDJSONMatchesContract(t *testing.T) {
 					note(f, v)
 				}
 			}
+			// The comparison records' nested enums.
+			if cs, ok := rec["counts"].(map[string]any); ok {
+				for k := range cs {
+					note("counts", k)
+				}
+			}
+			if ss, ok := rec["samples"].([]any); ok {
+				for _, x := range ss {
+					if sm, ok := x.(map[string]any); ok {
+						for _, f := range []string{"kind", "change"} {
+							if v, ok := sm[f]; ok {
+								note(f, v)
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 	if path := os.Getenv("RAVEN_NDJSON_DUMP"); path != "" {
@@ -256,6 +330,26 @@ func TestNDJSONMatchesContract(t *testing.T) {
 				t.Errorf("%s %v never emitted: the scenarios no longer cover it", field, v)
 			}
 		}
+	}
+	// Divergence kinds, as counts keys and as sample kinds, and upstream
+	// change kinds.
+	divProps := schema.def("divergence")["properties"].(map[string]any)
+	sampleProps := func(def string) map[string]any {
+		return schema.def(def)["properties"].(map[string]any)["samples"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
+	}
+	for field, enum := range map[string]any{
+		"counts": divProps["counts"].(map[string]any)["propertyNames"].(map[string]any)["enum"],
+		"kind":   sampleProps("divergence")["kind"].(map[string]any)["enum"],
+		"change": sampleProps("upstream_change")["change"].(map[string]any)["enum"],
+	} {
+		for _, v := range enum.([]any) {
+			if !seen[field][fmt.Sprint(v)] {
+				t.Errorf("%s %v never emitted: the scenarios no longer cover it", field, v)
+			}
+		}
+	}
+	if !slices.Equal(asStrings(divProps["counts"].(map[string]any)["propertyNames"].(map[string]any)["enum"]), telemetry.DivergenceKinds) {
+		t.Errorf("schema divergence kinds differ from telemetry.DivergenceKinds %v", telemetry.DivergenceKinds)
 	}
 }
 
