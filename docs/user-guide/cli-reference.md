@@ -252,6 +252,7 @@ raven routes --format json
 | `--peer` | Filter by BMP peer address. An IPv4 peer matches in plain or IPv4-mapped form |
 | `--router` | Filter by monitored router: its BMP source address or its BMP sysName |
 | `--posture` | Filter by security posture |
+| `--afi` | Filter by address family: `ipv4` or `ipv6` (`v4` and `v6` also work). Default: both. An IPv4-mapped IPv6 prefix is IPv6 |
 | `--rib` | The RIBs to list, comma-separated: `adj-rib-in-pre` (or `pre-policy`), `adj-rib-in-post` (or `post-policy`), `loc-rib`, `adj-rib-out-pre`, `adj-rib-out-post`. Default: the default view, `adj-rib-in-pre` and `loc-rib` |
 | `--format` | Output format: `table` (default), `wide` or `json` |
 
@@ -259,6 +260,18 @@ Every filter you give applies, so `--prefix 203.0.113.0/24 --peer
 198.51.100.1` returns that prefix from that one peer. Earlier releases
 honored only the first filter present and silently ignored the rest.
 `--router` with a sysName matches every router that reported that name.
+The daemon applies the filters, `--afi` included (the API's `afi`
+parameter).
+
+When `--peer` finds no routes in the RIBs listed but the peer has routes in
+others, `raven routes` says so on stderr and names the `--rib` that lists
+them. A router that reports its own address as a local-instance peer and
+sends that peer's routes post-policy only is the common case: `raven peers`
+shows the peer with 0 routes, because the default view holds none of them.
+
+```text
+no routes from peer 135.92.55.33 in adj-rib-in-pre, loc-rib; it has 31 in adj-rib-in-post (list them with --rib adj-rib-in-post)
+```
 
 Without `--rib`, `raven routes` lists the default view: Adj-RIB-In
 pre-policy, what your peers actually sent before your import policy
@@ -669,6 +682,7 @@ raven watch --rib loc-rib --posture origin-invalid
 | `--peer` | Only stream routes from this BMP peer |
 | `--router` | Only stream routes from this monitored router: its address or BMP sysName |
 | `--posture` | Only stream routes with this posture |
+| `--afi` | Only stream routes of this address family: `ipv4` or `ipv6`. Default: both |
 | `--rib` | Only stream routes of these RIBs, comma-separated, with the same names as [`raven routes --rib`](#raven-routes). Default: the default view, `adj-rib-in-pre` and `loc-rib` |
 
 Every filter you give applies, as with `raven routes`. Earlier releases sent
@@ -782,6 +796,23 @@ Always verify with your peers before creating ASPA objects.
 Simulate the impact of deploying routing security policies without changing
 anything on your routers.
 
+Both simulations run on the routes your routers received before import
+policy, Adj-RIB-In pre-policy, unless `--rib` names others:
+
+| Flag | Description |
+|---|---|
+| `--rib` | `adj-rib-in-pre` (default, or `pre-policy`), `adj-rib-in-post` (or `post-policy`), `loc-rib`, several of them comma-separated, or `all` (all three). A route reported in several of the RIBs counts once per RIB. Adj-RIB-Out is refused: it holds what a router sends, not what an import policy sees |
+| `--peer` | Only routes from this BMP peer |
+| `--format` | `table` (default) or `json` |
+
+Each summary's first line, `RIBs covered`, names the RIBs it counted
+(`ribs` in the JSON). The by-peer table counts the same routes as
+`raven routes --peer PEER --rib` with those RIBs; `raven routes` without
+`--rib` lists its default view (`adj-rib-in-pre` and `loc-rib`), which is
+not what-if's. Releases before v0.4.0 counted every RIB together, post-policy
+included, so a router's local-instance peer with only post-policy routes was
+counted in what-if but not found by `raven routes --peer`.
+
 ### --reject-invalid
 
 Simulate deploying reject-invalid ROV policy:
@@ -797,6 +828,7 @@ raven what-if --reject-invalid --format json
 ```text
 REJECT-INVALID IMPACT SUMMARY
 ─────────────────────────────────────────────────
+RIBs covered:                  adj-rib-in-pre
 Routes currently received:     1044293
 Routes that would be rejected: 2341 (0.22%)
 Prefixes affected:             1892
@@ -852,6 +884,7 @@ raven what-if --aspa-enforce --format json
 ```text
 ASPA ENFORCEMENT IMPACT SUMMARY
 ─────────────────────────────────────────────────
+RIBs covered:                  adj-rib-in-pre
 Routes currently received:     1,044,293
 Routes with path-suspect:      12 (0.00%) ← would be dropped
 Routes with no ASPA coverage:  891,203 (85.3%) ← unverifiable today

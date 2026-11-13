@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/nokia/bgp-routing-security-monitor/internal/aspa/recommender"
 	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store"
@@ -28,7 +29,11 @@ func (h *WhatIfHandler) RegisterRoutes(mux *http.ServeMux) {
 }
 
 func (h *WhatIfHandler) rejectInvalid(w http.ResponseWriter, r *http.Request) {
-	opts := whatifOptsFromRequest(r)
+	opts, err := whatifOptsFromRequest(r)
+	if err != nil {
+		httpError(w, err, http.StatusBadRequest)
+		return
+	}
 	result, err := h.simulator.SimulateRejectInvalid(r.Context(), opts)
 	if err != nil {
 		httpError(w, err, http.StatusInternalServerError)
@@ -38,7 +43,11 @@ func (h *WhatIfHandler) rejectInvalid(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *WhatIfHandler) aspaEnforce(w http.ResponseWriter, r *http.Request) {
-	opts := whatifOptsFromRequest(r)
+	opts, err := whatifOptsFromRequest(r)
+	if err != nil {
+		httpError(w, err, http.StatusBadRequest)
+		return
+	}
 	result, err := h.simulator.SimulateASPAEnforce(r.Context(), opts)
 	if err != nil {
 		httpError(w, err, http.StatusInternalServerError)
@@ -86,9 +95,16 @@ func (h *WhatIfHandler) aspaRecord(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"customer_asn": asn, "providers": providers})
 }
 
-func whatifOptsFromRequest(r *http.Request) *whatif.Options {
+// whatifOptsFromRequest reads the peer, afi, top and rib query parameters.
+// rib is whatif.ParseRIBs's: absent, Adj-RIB-In pre-policy.
+func whatifOptsFromRequest(r *http.Request) (*whatif.Options, error) {
 	q := r.URL.Query()
 	opts := &whatif.Options{FilterPeer: q.Get("peer"), FilterAFI: q.Get("afi")}
 	fmt.Sscan(q.Get("top"), &opts.TopN) //nolint:errcheck
-	return opts
+	ribs, err := whatif.ParseRIBs(strings.Join(q["rib"], ","))
+	if err != nil {
+		return nil, fmt.Errorf("invalid rib: %w", err)
+	}
+	opts.RIBs = ribs
+	return opts, nil
 }

@@ -120,6 +120,24 @@ var contractScenarios = map[string]func(t *testing.T) string{
 		m.stop()
 		return m.ndjson.String()
 	},
+	// error records with error_origin client, code 7 (a duplicate
+	// announcement, in the full sync) and code 6 (a withdrawal of an
+	// unknown record, in a delta), and their structural anomalies
+	// (protocol_error); the session goes on, resyncing once.
+	"protocol errors": func(t *testing.T) string {
+		srv := rtrtest.NewServer(t, monitorCache(2))
+		vrps := rtrtest.GenVRPs(0, 3, 65001)
+		srv.SetData(vrps, nil)
+		srv.RepeatInReset(vrps[:1], nil)
+		m := runMonitor(t, srv, "auto", nil)
+		m.waitRecords(t, "sync", 2) // the full sync and the resync's
+		srv.Advance(rtrtest.Delta{WithdrawVRPs: rtrtest.GenVRPs(100, 1, 65009)})
+		srv.Notify()
+		m.waitRecords(t, "sync", 3)
+		m.waitRecords(t, "anomaly", 3)
+		m.stop()
+		return m.ndjson.String()
+	},
 	// cache_not_ready and its disconnected (error_report, code 2).
 	"no data available": func(t *testing.T) string {
 		srv := rtrtest.NewServer(t, monitorCache(2))

@@ -24,7 +24,8 @@ const (
 	msgTermination     = 5
 )
 
-// Peer is a BGP peer of the fake router, in the global instance.
+// Peer is a BGP peer of the fake router, in the global instance unless Type
+// says otherwise.
 type Peer struct {
 	Addr  netip.Addr // the peer's address, IPv4 or IPv6
 	ASN   uint32
@@ -32,6 +33,14 @@ type Peer struct {
 	// PostPolicy sends the peer's routes as Adj-RIB-In post-policy; by
 	// default they are pre-policy.
 	PostPolicy bool
+	// AdjRIBOut sends them as Adj-RIB-Out (RFC 8671 O flag): what the
+	// router advertises to the peer.
+	AdjRIBOut bool
+	// Type is the BMP peer type (RFC 7854 §4.2): 0, global instance (the
+	// default), 1 RD instance, 2 local instance. Distinguisher is the
+	// per-peer header's Peer Distinguisher.
+	Type          uint8
+	Distinguisher uint64
 }
 
 // Route is one announcement. Prefix may be IPv4 (sent in the UPDATE's NLRI,
@@ -105,12 +114,16 @@ func (f *Feed) Initiation(sysName string) {
 // perPeerHeader is the 42-byte per-peer header for p (RFC 7854 §4.2).
 func perPeerHeader(p Peer) []byte {
 	h := make([]byte, 42)
-	h[0] = 0 // global instance peer
+	h[0] = p.Type
+	binary.BigEndian.PutUint64(h[2:10], p.Distinguisher)
 	if p.Addr.Is6() {
 		h[1] |= 0x80
 	}
 	if p.PostPolicy {
 		h[1] |= 0x40
+	}
+	if p.AdjRIBOut {
+		h[1] |= 0x10
 	}
 	a := p.Addr.As16()
 	if p.Addr.Is4() {

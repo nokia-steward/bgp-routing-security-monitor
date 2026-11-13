@@ -108,8 +108,14 @@ func TestValidateMatchesReference(t *testing.T) {
 		}
 		s := store.NewVRPStore()
 		s.ReplaceAll(slices.Clone(vrps), 1, 1)
-		byPrefix := map[string][]types.VRP{}
+		// The store holds each distinct VRP once (#66): so does the
+		// reference.
+		byPrefix, held := map[string][]types.VRP{}, map[types.VRP]bool{}
 		for _, v := range vrps {
+			if held[v] {
+				continue
+			}
+			held[v] = true
 			byPrefix[v.Prefix.String()] = append(byPrefix[v.Prefix.String()], v)
 		}
 		a := NewAnnotator(s)

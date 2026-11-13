@@ -14,30 +14,43 @@ import (
 
 // refStore is the reference the VRP store must match: the original
 // string-keyed lookup (a FindCovering that probes every prefix length from /0
-// up, VRPs kept in a slice in store order) with RTR's publication points.
+// up, VRPs kept in a slice in store order), holding each distinct VRP once
+// (issue #66), with RTR's publication points.
 // Lookups see the set as of the last RebuildIndex or ReplaceAll; AddVRP,
 // RemoveVRP and Clear change only the set being built. (The original store
 // also rebuilt on RemoveVRP and emptied the index on Clear, so mid-sync
 // lookups saw half-applied syncs.)
 type refStore struct {
 	vrps     []types.VRP
+	have     map[types.VRP]bool // members of vrps
 	byPrefix map[string][]types.VRP
 }
 
-func newRefStore() *refStore { return &refStore{byPrefix: make(map[string][]types.VRP)} }
+func newRefStore() *refStore {
+	return &refStore{have: make(map[types.VRP]bool), byPrefix: make(map[string][]types.VRP)}
+}
 
-func (s *refStore) Clear() { s.vrps = nil }
+func (s *refStore) Clear() { s.vrps, s.have = nil, make(map[types.VRP]bool) }
 
 func (s *refStore) ReplaceAll(vrps []types.VRP) {
-	s.vrps = vrps
+	s.Clear()
+	for _, v := range vrps {
+		s.AddVRP(v)
+	}
 	s.rebuildIndex()
 }
 
-func (s *refStore) AddVRP(vrp types.VRP) { s.vrps = append(s.vrps, vrp) }
+func (s *refStore) AddVRP(vrp types.VRP) {
+	if !s.have[vrp] {
+		s.have[vrp] = true
+		s.vrps = append(s.vrps, vrp)
+	}
+}
 
 func (s *refStore) RemoveVRP(vrp types.VRP) {
 	for i, v := range s.vrps {
 		if v.Prefix == vrp.Prefix && v.ASN == vrp.ASN && v.MaxLength == vrp.MaxLength {
+			delete(s.have, v)
 			s.vrps = append(s.vrps[:i], s.vrps[i+1:]...)
 			break
 		}

@@ -136,8 +136,9 @@ RAVEN restarted.
 
 ```text
 raven_rtr_session_state{cache="localhost:3323"}               # 1=connected, 0=disconnected
-raven_rtr_vrp_count{cache="localhost:3323"}                   # VRPs loaded
-raven_rtr_aspa_count{cache="localhost:3323"}                  # ASPA records loaded
+raven_rtr_vrp_count{cache="localhost:3323"}                   # Distinct VRPs this cache announced
+raven_rtr_aspa_count{cache="localhost:3323"}                  # Customer ASes this cache has an ASPA record for
+raven_rtr_protocol_errors_total{cache="localhost:3323", code="7"}  # PDUs in error, by RFC 8210 code (7: duplicate announcement, 6: withdrawal of unknown record)
 raven_rtr_last_sync_seconds{cache="localhost:3323"}           # Unix time of the last completed sync (End of Data)
 raven_rtr_last_serial_change_seconds{cache="localhost:3323"}  # Unix time of the last sync that changed the serial
 raven_rtr_data_expired{cache="localhost:3323"}                # 1 if no sync completed within the Expire Interval

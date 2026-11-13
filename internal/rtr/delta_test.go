@@ -59,20 +59,22 @@ func TestSyncDeltas(t *testing.T) {
 		t.Fatalf("incremental delta = %+v, want announced %v, withdrawn %v, ASPA [64500]", d, wantAdd, wantDel)
 	}
 
-	// Re-announcing providers the record already has changes nothing.
+	// Re-announcing the record as it is changes nothing.
 	serialQuery(conn, 3)
-	conn.Send(rtrtest.CacheResponse(2, 7), rtrtest.ASPA(true, 64500, 64501),
+	conn.Send(rtrtest.CacheResponse(2, 7), rtrtest.ASPA(true, 64500, 64501, 64502),
 		rtrtest.EndOfData(2, 7, 3, 600, 600, 7200))
 	if d := next("the no-op ASPA sync"); !d.Empty() {
 		t.Fatalf("delta for an unchanged ASPA record = %+v, want empty", d)
 	}
 
-	// A provider withdrawn from the record is a change to its customer.
+	// An announcement replaces the customer's provider set (8210bis
+	// §5.12): fewer providers is a change to it. (Before #66 the client
+	// added them to the set, so this changed nothing.)
 	serialQuery(conn, 4)
-	conn.Send(rtrtest.CacheResponse(2, 7), rtrtest.ASPA(false, 64500, 64502),
+	conn.Send(rtrtest.CacheResponse(2, 7), rtrtest.ASPA(true, 64500, 64501),
 		rtrtest.EndOfData(2, 7, 4, 600, 600, 7200))
-	if d := next("the ASPA withdrawal"); d.Full || !slices.Equal(d.ASPACustomers, []uint32{64500}) {
-		t.Fatalf("delta for a withdrawn provider = %+v, want ASPA [64500]", d)
+	if d := next("the ASPA replacement"); d.Full || !slices.Equal(d.ASPACustomers, []uint32{64500}) {
+		t.Fatalf("delta for a replaced ASPA record = %+v, want ASPA [64500]", d)
 	}
 
 	// A different session ID: the stores no longer match what the delta
@@ -132,8 +134,8 @@ func waitCount(t *testing.T, s *store.VRPStore, want uint64) {
 }
 
 // Changes apply at End of Data: while a sync's PDUs are arriving, lookups see
-// the previous set whole, for an incremental sync and for a full one (whose
-// Cache Response clears the set). The delta is handed to onUpdate only once
+// the previous set whole, for an incremental sync and for a full one (built
+// aside: the store's counts do not dip either). The delta is handed to onUpdate only once
 // the new set is what lookups see.
 func TestLookupsSeePreviousSetUntilEndOfData(t *testing.T) {
 	cache := rtrtest.NewCache(t)
@@ -142,6 +144,12 @@ func TestLookupsSeePreviousSetUntilEndOfData(t *testing.T) {
 	a := netip.MustParsePrefix("198.51.100.0/24")
 	b := netip.MustParsePrefix("203.0.113.0/24")
 	seenAtUpdate := make(chan []types.VRP, 4)
+	prefixPDUs := make(chan struct{}, 16)
+	tc.pduHook = func(typ uint8) {
+		if typ == PDUIPv4Prefix {
+			prefixPDUs <- struct{}{}
+		}
+	}
 	tc.SetOnUpdate(func(*store.Delta) { seenAtUpdate <- vrps.FindCovering(b) })
 	tc.start(t)
 	has := func(p netip.Prefix) bool { return len(vrps.FindCovering(p)) > 0 }
@@ -171,14 +179,24 @@ func TestLookupsSeePreviousSetUntilEndOfData(t *testing.T) {
 		t.Fatal("after End of Data lookups do not see the sync")
 	}
 
-	// A full sync: Cache Reset, Reset Query, then a Cache Response that
-	// clears the set before the snapshot arrives.
+	// A full sync: Cache Reset, Reset Query, then a Cache Response and the
+	// snapshot, built aside until its End of Data.
+	for len(prefixPDUs) > 0 {
+		<-prefixPDUs
+	}
 	conn.Send(rtrtest.SerialNotify(2, 7, 3))
 	cache.Next(5 * time.Second)
 	conn.Send(rtrtest.CacheReset(2))
 	cache.Next(5 * time.Second)
 	conn.Send(rtrtest.CacheResponse(2, 7), rtrtest.IPv4Prefix(2, true, testPrefix, 24, 65000))
-	waitCount(t, vrps, 1)
+	select {
+	case <-prefixPDUs:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the full sync's prefix PDU was not applied")
+	}
+	if vrps.Count() != 2 {
+		t.Errorf("mid-full-sync the store counts %d VRPs, want the previous 2", vrps.Count())
+	}
 	if !has(a) || !has(b) || has(testPrefix) {
 		t.Fatalf("mid-full-sync lookups see a=%v b=%v testPrefix=%v, want the previous set (true true false)",
 			has(a), has(b), has(testPrefix))

@@ -68,6 +68,10 @@ type Server struct {
 	demoMode    bool
 	apiSrv      *api.Server
 	rtrReady    chan struct{}
+	// heldRestored are routes restored from a snapshot that wait for the
+	// first RTR sync to be inserted (restoreSnapshots). Set before ingestLoop
+	// starts and owned by it after.
+	heldRestored []*types.Route
 
 	// fsManagers holds the active flowspec lifecycle managers.
 	fsManagers []*flowspec.Manager
@@ -461,6 +465,8 @@ func (s *Server) RunContext(parent context.Context) error {
 		} else {
 			snapStart := time.Now()
 			routes := s.table.Snapshot()
+			// Routes still held for want of an RTR sync are kept too.
+			routes = append(routes, s.heldRestored...)
 			if err := writer.WriteRoutes(routes); err != nil {
 				s.log.Error("failed to write route snapshot", "err", err)
 			} else {
@@ -510,6 +516,7 @@ func (s *Server) ingestLoop(ctx context.Context) {
 	select {
 	case <-s.rtrReady:
 		s.log.Info("RTR ready — starting route annotation")
+		s.releaseRestored()
 	case <-ctx.Done():
 		return
 	}
@@ -1001,6 +1008,22 @@ func (s *Server) restoreSnapshots() {
 	}
 	reader := snapshot.NewReader(s.cfg.Persistence.SnapshotDir, Version)
 
+	// RPKI first: the restored routes' ROV reasons are computed from it.
+	vrpsRestored := false
+	if vrps, aspas, serial, err := reader.ReadRPKI(); err != nil {
+		if !errors.Is(err, snapshot.ErrVersionMismatch) {
+			s.log.Warn("failed to read RPKI snapshot", "err", err)
+		} else {
+			s.log.Warn("RPKI snapshot version mismatch, starting cold")
+		}
+	} else if vrps != nil {
+		s.vrpStore.Restore(vrps)
+		s.aspaStore.Restore(aspas)
+		vrpsRestored = len(vrps) > 0
+		s.log.Info("restored RPKI snapshot",
+			"vrps", len(vrps), "aspas", len(aspas), "serial", serial)
+	}
+
 	if routes, err := reader.ReadRoutes(); err != nil {
 		if errors.Is(err, snapshot.ErrFormatMismatch) {
 			// Not migrated: an old-format route key cannot say which
@@ -1012,23 +1035,48 @@ func (s *Server) restoreSnapshots() {
 			s.log.Warn("route snapshot version mismatch, starting cold")
 		}
 	} else if routes != nil {
-		s.table.Restore(routes)
+		if !vrpsRestored {
+			// No VRPs to compute the routes' ROV reasons from: hold them
+			// until the first RTR sync (releaseRestored), so no query
+			// sees a restored route without its reason.
+			s.heldRestored = routes
+			s.log.Info("restored route snapshot without VRPs; routes held until the first RTR sync",
+				"routes", len(routes))
+			return
+		}
+		s.insertRestored(routes)
 		s.log.Info("restored route snapshot", "routes", len(routes))
 	}
+}
 
-	if vrps, aspas, serial, err := reader.ReadRPKI(); err != nil {
-		if !errors.Is(err, snapshot.ErrVersionMismatch) {
-			s.log.Warn("failed to read RPKI snapshot", "err", err)
-		} else {
-			s.log.Warn("RPKI snapshot version mismatch, starting cold")
+// insertRestored puts routes restored from a snapshot in the table, each
+// with its ROV reason computed from the VRP store (#61): a snapshot keeps
+// only the ROV state.
+func (s *Server) insertRestored(routes []*types.Route) {
+	mismatched := 0
+	for _, r := range routes {
+		if !s.engine.RestoreROVReason(r) {
+			mismatched++
 		}
-	} else if vrps != nil {
-		s.vrpStore.Restore(vrps)
-		s.aspaStore.Restore(aspas)
-		s.log.Info("restored RPKI snapshot",
-			"vrps", len(vrps), "aspas", len(aspas), "serial", serial)
 	}
+	if mismatched > 0 {
+		s.log.Info("restored routes whose ROV state the current VRPs no longer give; the next revalidation updates them",
+			"routes", mismatched)
+	}
+	s.table.Restore(routes)
+}
 
+// releaseRestored inserts the routes restoreSnapshots held for want of VRPs.
+// ingestLoop calls it once the first RTR sync has filled the VRP store,
+// before it applies any BMP event or revalidation.
+func (s *Server) releaseRestored() {
+	if s.heldRestored == nil {
+		return
+	}
+	routes := s.heldRestored
+	s.insertRestored(routes)
+	s.heldRestored = nil
+	s.log.Info("restored route snapshot", "routes", len(routes))
 }
 
 // bindListeners binds the BMP, API, metrics and pprof listeners, starts

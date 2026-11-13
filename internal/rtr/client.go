@@ -45,8 +45,10 @@ const rtrHeaderLen = 8
 // Error Report codes (RFC 8210 §12). In an Error Report the header's
 // session ID field carries the code.
 const (
-	errCodeNoDataAvailable     uint16 = 2
-	errCodeUnsupportedProtoVer uint16 = 4
+	errCodeNoDataAvailable       uint16 = 2
+	errCodeUnsupportedProtoVer   uint16 = 4
+	errCodeWithdrawalUnknown     uint16 = 6
+	errCodeDuplicateAnnouncement uint16 = 7
 )
 
 // End of Data timing (RFC 8210 §6): defaults when the cache sends none
@@ -90,6 +92,10 @@ type errorReportError struct {
 
 func (e *errorReportError) Error() string { return e.err.Error() }
 func (e *errorReportError) Unwrap() error { return e.err }
+
+// defaultHealEvery is the least time between two self-healing resyncs of
+// one cache (healResync).
+const defaultHealEvery = 5 * time.Minute
 
 // defaultVersionReprobe is how often a downgraded client re-probes the cache
 // at the configured version unless SetVersionReprobeInterval says otherwise.
@@ -186,6 +192,8 @@ type Client struct {
 
 	// connHook, if set, sees each session's connection. Tests only.
 	connHook func(net.Conn)
+	// pduHook, if set, is called after each PDU is applied. Tests only.
+	pduHook func(pduType uint8)
 
 	// Telemetry (optional). A nil recorder is a safe no-op.
 	tel           *telemetry.Recorder
@@ -195,6 +203,25 @@ type Client struct {
 	vrpWithdrawn  int
 	aspaAnnounced int
 	aspaWithdrawn int
+	// faults counts this sync's PDUs in error by RFC 8210 error code (6,
+	// 7), faultFirst describes the first of each; reset on each Cache
+	// Response and reported at End of Data (reportFaults).
+	faults     map[uint16]int
+	faultFirst map[uint16]string
+
+	// vrpStage and aspaStage build a full sync's data aside from the
+	// stores, swapped in at its End of Data; nil outside a full sync.
+	vrpStage  *store.VRPStage
+	aspaStage *store.ASPAStage
+
+	// Self-healing resyncs (healResync): at most one per healEvery; lastHeal
+	// is when the last was sent, by the clock now.
+	healEvery time.Duration
+	lastHeal  time.Time
+	now       func() time.Time
+
+	// owner is this client's owner in the shared VRP and ASPA stores.
+	owner store.Owner
 
 	// delta records how the current sync changes the stores; reset on
 	// each Cache Response and handed to onUpdate at End of Data.
@@ -210,12 +237,20 @@ func NewClient(address string, transport string, tlsCfg *config.TLSConfig, vrpSt
 		transport = "tcp"
 	}
 	logger := log.With("subsystem", "rtr", "cache", address)
+	owner, ok := store.Unowned, true
+	if vrpStore != nil { // only tests that never sync pass none
+		owner, ok = vrpStore.NewOwner()
+	}
+	if !ok {
+		return nil, fmt.Errorf("RTR cache %s: more than %d caches share one VRP store", address, store.MaxOwners-1)
+	}
 
 	c := &Client{
 		address:       address,
 		transport:     transport,
 		vrpStore:      vrpStore,
 		aspaStore:     aspaStore,
+		owner:         owner,
 		log:           logger,
 		retryMin:      5 * time.Second,
 		retryMax:      60 * time.Second,
@@ -229,6 +264,8 @@ func NewClient(address string, transport string, tlsCfg *config.TLSConfig, vrpSt
 		expire:            defaultExpire,
 		unit:              time.Second,
 		reprobeInterval:   defaultVersionReprobe,
+		healEvery:         defaultHealEvery,
+		now:               time.Now,
 	}
 
 	if transport == "tls" {
@@ -633,6 +670,7 @@ func (c *Client) readLoop(r *bufio.Reader, out chan<- pduResult, stop <-chan str
 // saying why.
 func (c *Client) runSession(ctx context.Context) (err error) {
 	c.protoVersion = c.negotiatedVersion
+	c.vrpStage, c.aspaStage = nil, nil // an unfinished full sync's, discarded
 
 	conn, tcpRaw, err := c.dial(ctx)
 	if err != nil {
@@ -660,8 +698,9 @@ func (c *Client) runSession(ctx context.Context) (err error) {
 	})
 	metrics.RTRSessionState.WithLabelValues(c.address).Set(1)
 	defer metrics.RTRSessionState.WithLabelValues(c.address).Set(0)
-	metrics.RTRVRPCount.WithLabelValues(c.address).Set(float64(c.vrpStore.Count()))
-	metrics.RTRASPACount.WithLabelValues(c.address).Set(float64(c.aspaStore.Count()))
+	metrics.RTRVRPCount.WithLabelValues(c.address).Set(float64(c.vrpStore.OwnerCount(c.owner)))
+	metrics.RTRASPACount.WithLabelValues(c.address).Set(float64(c.aspaStore.OwnerCount(c.owner)))
+	metrics.RTRProtocolErrors.WithLabelValues(c.address, "7") // 0 until the first
 
 	// Timers: refresh fires the next poll and is armed only after an End of
 	// Data; response bounds the wait for an answer to the outstanding query
@@ -794,15 +833,17 @@ func (c *Client) runSession(ctx context.Context) (err error) {
 			// the EndOfData telemetry reflects only this sync's deltas.
 			c.vrpAnnounced, c.vrpWithdrawn = 0, 0
 			c.aspaAnnounced, c.aspaWithdrawn = 0, 0
+			c.faults, c.faultFirst = nil, nil
 			// A full sync rebuilds the stores (and sessionEstablished may
 			// have cleared ASPA): only a full revalidation follows it.
 			c.delta = store.NewDeltaRecorder(c.fullSyncPending)
-			// If we're servicing a Reset Query, clear the stores so the
-			// incoming full snapshot replaces rather than appends. Without
-			// this, every reconnect doubles the VRP store size.
+			// A Reset Query's answer replaces this cache's data whole. It is
+			// built aside and swapped in at End of Data (endOfData), so
+			// lookups and counts keep the previous data until then, and a
+			// session that ends first leaves it as it was.
+			c.vrpStage, c.aspaStage = nil, nil
 			if c.fullSyncPending {
-				c.vrpStore.Clear()
-				c.aspaStore.Clear()
+				c.vrpStage, c.aspaStage = store.NewVRPStage(), store.NewASPAStage()
 			}
 
 		case PDUIPv4Prefix:
@@ -811,14 +852,7 @@ func (c *Client) runSession(ctx context.Context) (err error) {
 				c.log.Error("bad IPv4 prefix PDU", "error", err)
 				continue
 			}
-			if withdraw {
-				c.vrpStore.RemoveVRP(vrp)
-				c.vrpWithdrawn++
-			} else {
-				c.vrpStore.AddVRP(vrp)
-				c.vrpAnnounced++
-			}
-			c.recorder().VRP(vrp, withdraw)
+			c.applyVRP(vrp, withdraw)
 
 		case PDUIPv6Prefix:
 			vrp, withdraw, err := c.parseIPv6Prefix(payload)
@@ -826,14 +860,7 @@ func (c *Client) runSession(ctx context.Context) (err error) {
 				c.log.Error("bad IPv6 prefix PDU", "error", err)
 				continue
 			}
-			if withdraw {
-				c.vrpStore.RemoveVRP(vrp)
-				c.vrpWithdrawn++
-			} else {
-				c.vrpStore.AddVRP(vrp)
-				c.vrpAnnounced++
-			}
-			c.recorder().VRP(vrp, withdraw)
+			c.applyVRP(vrp, withdraw)
 
 		case PDUASPA:
 			customerASN, providerASNs, withdraw, err := c.parseASPAPDU(sessionID, payload)
@@ -841,17 +868,35 @@ func (c *Client) runSession(ctx context.Context) (err error) {
 				c.log.Error("bad ASPA PDU", "error", err)
 				continue
 			}
-			changed := false
+			// 8210bis §5.12: an announcement for a Customer ASN this cache
+			// already announced replaces its provider set (not a duplicate
+			// announcement); a withdrawal removes the whole record, whatever
+			// providers it lists (it should list none).
+			// Unlike a VRP, an ASPA record has no count: a legitimate cache
+			// replaces a provider set by announcing it again. So an
+			// announcement then a withdrawal of the same customer in one
+			// delta is no fault: the record is removed, as the stream says.
+			// A withdrawal of a customer this cache has no record for is
+			// code 6.
+			var changed bool
+			known := true
+			switch {
+			case c.aspaStage != nil && withdraw:
+				known = c.aspaStage.Withdraw(customerASN)
+			case c.aspaStage != nil:
+				c.aspaStage.Announce(customerASN, providerASNs)
+			case withdraw:
+				changed, known = c.aspaStore.Withdraw(c.owner, customerASN)
+			default:
+				changed, _ = c.aspaStore.Announce(c.owner, customerASN, providerASNs)
+			}
 			if withdraw {
-				for _, p := range providerASNs {
-					changed = c.aspaStore.RemoveProvider(customerASN, p) || changed
-				}
 				c.aspaWithdrawn++
 			} else {
-				for _, p := range providerASNs {
-					changed = c.aspaStore.AddProvider(customerASN, p) || changed
-				}
 				c.aspaAnnounced++
+			}
+			if !known {
+				c.fault(errCodeWithdrawalUnknown, fmt.Sprintf("ASPA customer AS%d", customerASN))
 			}
 			if changed {
 				c.recorder().ASPA(customerASN)
@@ -867,9 +912,19 @@ func (c *Client) runSession(ctx context.Context) (err error) {
 				response.Stop()
 				response = nil
 			}
-			c.endOfData(sessionID, eod)
+			faults := c.endOfData(sessionID, eod)
 			c.sessionSynced = true
 			c.hasReset = true
+
+			// The sync had PDUs in error: resync on the same session, without
+			// dropping it or flushing (healResync).
+			if len(faults) > 0 && c.healResync(faults) {
+				notifyPending = false
+				if err := query(func() error { return c.sendResetQuery(conn, c.protoVersion) }); err != nil {
+					return fmt.Errorf("send reset query to resync: %w", err)
+				}
+				continue
+			}
 
 			// A notify for a serial this sync did not reach: ask again now.
 			if notifyPending && notifiedSerial != c.serial {
@@ -920,6 +975,9 @@ func (c *Client) runSession(ctx context.Context) (err error) {
 		default:
 			c.log.Debug("unknown RTR PDU type", "type", pduType)
 		}
+		if c.pduHook != nil {
+			c.pduHook(pduType)
+		}
 	}
 }
 
@@ -939,7 +997,7 @@ func (c *Client) sessionEstablished(version uint8) {
 		// ASPA records exist only from version 2. Drop any left from an
 		// earlier version 2 session rather than validate against them
 		// indefinitely.
-		c.aspaStore.Clear()
+		c.aspaStore.ClearOwner(c.owner)
 		metrics.RTRASPACount.WithLabelValues(c.address).Set(0)
 		c.log.Warn("RTR session below protocol version 2: ASPA validation is unavailable",
 			"protocol_version", c.protoVersion)
@@ -949,7 +1007,13 @@ func (c *Client) sessionEstablished(version uint8) {
 // endOfData completes a sync: it records the cache's serial and timing,
 // updates metrics and telemetry, re-arms the expiry timer and, if the data
 // changed, notifies the update callback.
-func (c *Client) endOfData(sessionID uint16, eod endOfData) {
+func (c *Client) endOfData(sessionID uint16, eod endOfData) (faults map[uint16]int) {
+	if c.vrpStage != nil {
+		// A full sync: its data replaces this cache's, whole, now.
+		c.vrpStore.ReplaceOwner(c.owner, c.vrpStage)
+		c.aspaStore.ReplaceOwner(c.owner, c.aspaStage)
+		c.vrpStage, c.aspaStage = nil, nil
+	}
 	serialChanged := !c.haveSerial || eod.serial != c.serial
 	applied := c.vrpAnnounced + c.vrpWithdrawn + c.aspaAnnounced + c.aspaWithdrawn
 	dataChanged := c.fullSyncPending || serialChanged || applied > 0
@@ -970,6 +1034,8 @@ func (c *Client) endOfData(sessionID uint16, eod endOfData) {
 		c.vrpStore.RebuildIndex()
 	}
 
+	faults = c.reportFaults()
+
 	// Emit sync telemetry before clearing fullSyncPending, which
 	// distinguishes a full (Reset Query) from an incremental sync.
 	now := time.Now()
@@ -983,10 +1049,10 @@ func (c *Client) endOfData(sessionID uint16, eod endOfData) {
 		EventType:     telemetry.EventSync,
 		Serial:        eod.serial,
 		SerialChanged: &serialChanged,
-		VRPTotal:      int(c.vrpStore.Count()),
+		VRPTotal:      int(c.vrpStore.OwnerCount(c.owner)),
 		VRPAnnounced:  c.vrpAnnounced,
 		VRPWithdrawn:  c.vrpWithdrawn,
-		ASPATotal:     c.aspaStore.Count(),
+		ASPATotal:     c.aspaStore.OwnerCount(c.owner),
 		ASPAAnnounced: c.aspaAnnounced,
 		ASPAWithdrawn: c.aspaWithdrawn,
 		SyncDuration:  now.Sub(c.syncStart),
@@ -1000,8 +1066,8 @@ func (c *Client) endOfData(sessionID uint16, eod endOfData) {
 	c.lastSyncTime = now
 	c.fullSyncPending = false
 
-	metrics.RTRVRPCount.WithLabelValues(c.address).Set(float64(c.vrpStore.Count()))
-	metrics.RTRASPACount.WithLabelValues(c.address).Set(float64(c.aspaStore.Count()))
+	metrics.RTRVRPCount.WithLabelValues(c.address).Set(float64(c.vrpStore.OwnerCount(c.owner)))
+	metrics.RTRASPACount.WithLabelValues(c.address).Set(float64(c.aspaStore.OwnerCount(c.owner)))
 	metrics.RTRLastSync.WithLabelValues(c.address).Set(float64(now.Unix()))
 	if serialChanged {
 		metrics.RTRLastSerialChange.WithLabelValues(c.address).Set(float64(now.Unix()))
@@ -1018,8 +1084,8 @@ func (c *Client) endOfData(sessionID uint16, eod endOfData) {
 	c.expireTimer = time.NewTimer(c.interval(c.expire))
 
 	c.log.Info("RTR sync complete",
-		"vrp_count", c.vrpStore.Count(),
-		"aspa_count", c.aspaStore.Count(),
+		"vrp_count", c.vrpStore.OwnerCount(c.owner),
+		"aspa_count", c.aspaStore.OwnerCount(c.owner),
 		"serial", eod.serial,
 		"serial_changed", serialChanged,
 		"session_id", sessionID,
@@ -1035,6 +1101,7 @@ func (c *Client) endOfData(sessionID uint16, eod endOfData) {
 		c.onSync()
 	}
 	c.readyOnce.Do(func() { close(c.ready) })
+	return faults
 }
 
 // markExpired flags the cache's data as expired: no sync has completed within
@@ -1331,4 +1398,122 @@ func (c *Client) parseErrorReport(data []byte) string {
 	}
 
 	return string(data[offset : offset+int(textLen)])
+}
+
+// applyVRP applies one IPv4 or IPv6 Prefix PDU: to the stage in a full
+// sync, to the VRP store otherwise.
+//
+// The cache holds each VRP with a count: announcements less withdrawals,
+// never below 0. An announcement of a VRP it already holds is a Duplicate
+// Announcement (RFC 8210 §5.6, error code 7) and a withdrawal of one it does
+// not hold a Withdrawal of Unknown Record (code 6). RFC 8210 §12 makes both
+// fatal: drop the session (and, in draft-ietf-sidrops-8210bis, flush the
+// cache's data). RAVEN deviates: a monitor must not flush its data on a
+// cache bug. Fort 1.7.0 announces records the router holds and withdraws
+// them in the same answer (NICMx/FORT-validator#204), meaning no change; a
+// router that ignores the announcement and applies the withdrawal loses
+// valid VRPs. With the count the VRP stays held, as the cache meant, the
+// faults are reported (reportFaults), and a Reset Query on the same session
+// (healResync) replaces the data with the cache's own at its End of Data.
+func (c *Client) applyVRP(vrp types.VRP, withdraw bool) {
+	if withdraw {
+		c.vrpWithdrawn++
+	} else {
+		c.vrpAnnounced++
+	}
+	switch {
+	case c.vrpStage != nil && withdraw:
+		if !c.vrpStage.Withdraw(vrp) {
+			c.fault(errCodeWithdrawalUnknown, vrpText(vrp))
+		}
+	case c.vrpStage != nil:
+		if !c.vrpStage.Announce(vrp) {
+			c.fault(errCodeDuplicateAnnouncement, vrpText(vrp))
+		}
+	case withdraw:
+		known, released := c.vrpStore.RemoveVRPFrom(c.owner, vrp)
+		if !known {
+			c.fault(errCodeWithdrawalUnknown, vrpText(vrp))
+		}
+		if released {
+			c.recorder().VRP(vrp, true)
+		}
+	default:
+		if c.vrpStore.AddVRPFrom(c.owner, vrp) {
+			c.recorder().VRP(vrp, false)
+		} else {
+			c.fault(errCodeDuplicateAnnouncement, vrpText(vrp))
+		}
+	}
+}
+
+func vrpText(v types.VRP) string {
+	return fmt.Sprintf("%s max-length %d AS%d", v.Prefix, v.MaxLength, v.ASN)
+}
+
+// fault counts one PDU in error with RFC 8210 error code code; what
+// describes its record.
+func (c *Client) fault(code uint16, what string) {
+	if c.faults == nil {
+		c.faults, c.faultFirst = make(map[uint16]int), make(map[uint16]string)
+	}
+	if c.faults[code] == 0 {
+		c.faultFirst[code] = what
+	}
+	c.faults[code]++
+	metrics.RTRProtocolErrors.WithLabelValues(c.address, fmt.Sprint(code)).Inc()
+}
+
+// faultTexts describes each fault code, for error events.
+var faultTexts = map[uint16]string{
+	errCodeWithdrawalUnknown:     "withdrawal of unknown record: %d records withdrawn that this cache did not hold, first %s; ignored",
+	errCodeDuplicateAnnouncement: "duplicate announcement received: %d records announced again while this cache held them, first %s; counted",
+}
+
+// reportFaults records the sync's faults, one error event per code (origin
+// client, with the count), and returns the counts by code; nil if none.
+func (c *Client) reportFaults() map[uint16]int {
+	faults := c.faults
+	for _, code := range []uint16{errCodeWithdrawalUnknown, errCodeDuplicateAnnouncement} {
+		n := faults[code]
+		if n == 0 {
+			continue
+		}
+		c.log.Warn("RTR cache sent PDUs in error", "error_code", code, "count", n, "first", c.faultFirst[code])
+		c.tel.Record(telemetry.SessionEvent{
+			Cache:        c.address,
+			EventType:    telemetry.EventError,
+			ErrorText:    fmt.Sprintf(faultTexts[code], n, c.faultFirst[code]),
+			ErrorCode:    &code,
+			ErrorOrigin:  telemetry.ErrorOriginClient,
+			ErrorCount:   n,
+			ProtoVersion: c.protoVersion,
+		})
+	}
+	c.faults, c.faultFirst = nil, nil
+	return faults
+}
+
+// healResync decides whether a sync with PDUs in error is followed by a
+// self-healing resync: a Reset Query on the same session, whose full sync
+// replaces this cache's data with its own at End of Data, with no drop and
+// no flush first. At most one per healEvery per cache, so a cache whose
+// every answer is in error is not asked for its whole data set on every
+// poll. It reports whether to send the Reset Query, and if so marks the full
+// sync.
+func (c *Client) healResync(faults map[uint16]int) bool {
+	now := c.now()
+	if !c.lastHeal.IsZero() && now.Sub(c.lastHeal) < c.healEvery {
+		c.log.Info("RTR cache sent PDUs in error; not resyncing yet: at most one self-healing resync per interval",
+			"duplicate_announcements", faults[errCodeDuplicateAnnouncement],
+			"unknown_withdrawals", faults[errCodeWithdrawalUnknown],
+			"interval", c.healEvery, "next_allowed", c.lastHeal.Add(c.healEvery))
+		return false
+	}
+	c.lastHeal = now
+	c.fullSyncPending = true
+	c.log.Warn("RTR cache sent PDUs in error; resyncing with a Reset Query on the same session (its data stays in use until the resync's End of Data)",
+		"duplicate_announcements", faults[errCodeDuplicateAnnouncement],
+		"unknown_withdrawals", faults[errCodeWithdrawalUnknown])
+	return true
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"slices"
@@ -15,9 +16,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/nokia/bgp-routing-security-monitor/internal/api"
 	"github.com/nokia/bgp-routing-security-monitor/internal/buildinfo"
 	"github.com/nokia/bgp-routing-security-monitor/internal/config"
 	"github.com/nokia/bgp-routing-security-monitor/internal/server"
+	"github.com/nokia/bgp-routing-security-monitor/internal/types"
 )
 
 // ─── serve ───
@@ -357,6 +360,9 @@ var routesCmd = &cobra.Command{
 		if v, _ := cmd.Flags().GetString("posture"); v != "" {
 			params.Set("posture", v)
 		}
+		if err := afiParam(cmd, params); err != nil {
+			return err
+		}
 		if v, _ := cmd.Flags().GetString("router"); v != "" {
 			params.Set("router", v)
 		}
@@ -381,8 +387,76 @@ var routesCmd = &cobra.Command{
 			return err
 		}
 		printRoutes(os.Stdout, routes, format == "wide")
+		if peer, _ := cmd.Flags().GetString("peer"); peer != "" && len(routes) == 0 {
+			rib, _ := cmd.Flags().GetString("rib")
+			if hint := peerRIBHint(addr, peer, rib); hint != "" {
+				fmt.Fprintln(os.Stderr, hint)
+			}
+		}
 		return nil
 	},
+}
+
+// peerRIBHint explains an empty raven routes --peer: the peer's routes are
+// all in RIBs the query did not list (by default the default view,
+// adj-rib-in-pre and loc-rib). A local-instance peer whose router sends only
+// post-policy routes is one: raven peers shows it with 0 routes, while
+// what-if --rib adj-rib-in-post counts them. "" when there is nothing to
+// say or the peers cannot be read.
+func peerRIBHint(addr, peer, rib string) string {
+	want := types.DefaultView
+	if rib != "" {
+		var names []string
+		for _, n := range strings.Split(rib, ",") {
+			if n = strings.TrimSpace(n); n != "" {
+				names = append(names, n)
+			}
+		}
+		s, err := types.ParseRIBSet(names)
+		if err != nil {
+			return ""
+		}
+		want = s
+	}
+	pa, err := netip.ParseAddr(peer)
+	if err != nil {
+		return ""
+	}
+	resp, err := apiGet(addr, "/api/v1/peers", nil)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	var peers []struct {
+		Addr        string            `json:"addr"`
+		RoutesByRIB map[string]uint64 `json:"routes_by_rib"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&peers); err != nil {
+		return ""
+	}
+	elsewhere := map[types.RIBType]uint64{}
+	for _, p := range peers {
+		if a, err := netip.ParseAddr(p.Addr); err != nil || a.Unmap() != pa.Unmap() {
+			continue
+		}
+		for name, n := range p.RoutesByRIB {
+			if r, err := types.ParseRIBType(name); err == nil && !want.Has(r) && n > 0 {
+				elsewhere[r] += n
+			}
+		}
+	}
+	if len(elsewhere) == 0 {
+		return ""
+	}
+	var parts, ribs []string
+	for _, r := range types.AllRIBTypes {
+		if n := elsewhere[r]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%d in %s", n, r))
+			ribs = append(ribs, r.String())
+		}
+	}
+	return fmt.Sprintf("no routes from peer %s in %s; it has %s (list them with --rib %s)",
+		peer, strings.Join(want.Names(), ", "), strings.Join(parts, ", "), strings.Join(ribs, ","))
 }
 
 // routeRow is the part of an /api/v1/routes route that raven routes shows.
@@ -565,6 +639,9 @@ var watchCmd = &cobra.Command{
 		if v, _ := cmd.Flags().GetString("posture"); v != "" {
 			params.Set("posture", v)
 		}
+		if err := afiParam(cmd, params); err != nil {
+			return err
+		}
 		if v, _ := cmd.Flags().GetString("router"); v != "" {
 			params.Set("router", v)
 		}
@@ -682,6 +759,7 @@ func init() {
 	routesCmd.Flags().Uint32("origin-asn", 0, "filter by origin ASN")
 	routesCmd.Flags().String("peer", "", "filter by BMP peer address")
 	routesCmd.Flags().String("posture", "", "filter by security posture")
+	routesCmd.Flags().String("afi", "", afiFlagHelp)
 	routesCmd.Flags().String("router", "", "filter by monitored router: its address or BMP sysName")
 	routesCmd.Flags().String("rib", "", ribFlagHelp)
 	routesCmd.Flags().String("format", "table", "output format: table, wide, json")
@@ -696,8 +774,26 @@ func init() {
 	watchCmd.Flags().Uint32("origin-asn", 0, "filter by origin ASN")
 	watchCmd.Flags().String("peer", "", "filter by peer")
 	watchCmd.Flags().String("posture", "", "filter by posture")
+	watchCmd.Flags().String("afi", "", afiFlagHelp)
 	watchCmd.Flags().String("router", "", "filter by monitored router: its address or BMP sysName")
 	watchCmd.Flags().String("rib", "", ribFlagHelp)
+}
+
+// afiFlagHelp is the help of routes and watch --afi.
+const afiFlagHelp = "filter by address family: ipv4 or ipv6 (default: both)"
+
+// afiParam sets the afi query parameter from --afi, checked here so a typo
+// fails before any request. The daemon filters.
+func afiParam(cmd *cobra.Command, params url.Values) error {
+	v, _ := cmd.Flags().GetString("afi")
+	afi, err := api.ParseAFI(v)
+	if err != nil {
+		return fmt.Errorf("--afi: %w", err)
+	}
+	if afi != 0 {
+		params.Set("afi", fmt.Sprintf("ipv%d", afi))
+	}
+	return nil
 }
 
 // ribFlagHelp is the help of routes and watch --rib.

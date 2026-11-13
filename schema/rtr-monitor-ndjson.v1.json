@@ -321,7 +321,7 @@
     },
     "error": {
       "type": "object",
-      "description": "The cache sent an Error Report that is a fault: any code but 2, and code 4 on an established session, at version 0 or at a pinned version. The session ends.",
+      "description": "The cache sent an Error Report that is a fault: any code but 2, and code 4 on an established session, at version 0 or at a pinned version; the session ends. Or, with error_origin client, RAVEN found a protocol error in what the cache sent during a sync (code 7: a record announced again while held; code 6: a record withdrawn that was not held). RAVEN keeps a count per record, so the cache's intended state holds, and resyncs with a Reset Query on the same session; the session goes on.",
       "properties": {
         "schema_version": {
           "type": "integer",
@@ -339,7 +339,7 @@
         },
         "event_type": {
           "const": "error",
-          "description": "The cache sent an Error Report that is a fault: any code but 2, and code 4 on an established session, at version 0 or at a pinned version. The session ends."
+          "description": "The cache sent an Error Report that is a fault: any code but 2, and code 4 on an established session, at version 0 or at a pinned version; the session ends. Or, with error_origin client, RAVEN found a protocol error in what the cache sent during a sync (code 7: a record announced again while held; code 6: a record withdrawn that was not held). RAVEN keeps a count per record, so the cache's intended state holds, and resyncs with a Reset Query on the same session; the session goes on."
         },
         "proto_version": {
           "type": "integer",
@@ -354,11 +354,21 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 65535,
-          "description": "RFC 8210 §12 Error Report code."
+          "description": "RFC 8210 §12 error code: the Error Report's, or, with error_origin client, the error RAVEN found: 6 (Withdrawal of Unknown Record) or 7 (Duplicate Announcement Received)."
         },
         "error_text": {
           "type": "string",
           "description": "The cache's error text. Absent when empty."
+        },
+        "error_origin": {
+          "type": "string",
+          "const": "client",
+          "description": "Present only when RAVEN found the error itself in what the cache sent, rather than the cache sending an Error Report. Absent on Error Reports."
+        },
+        "error_count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "With error_origin client: how many PDUs of the sync had the error (one record per sync per code)."
         }
       },
       "required": [
@@ -368,6 +378,33 @@
         "event_type",
         "proto_version",
         "error_code"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "error_origin": {
+                "const": "client"
+              }
+            },
+            "required": [
+              "error_origin"
+            ]
+          },
+          "then": {
+            "properties": {
+              "error_code": {
+                "enum": [
+                  6,
+                  7
+                ]
+              }
+            },
+            "required": [
+              "error_count"
+            ]
+          }
+        }
       ],
       "additionalProperties": false
     },
@@ -569,8 +606,8 @@
         },
         "trigger": {
           "type": "string",
-          "pattern": "^(cache_reset|error_report|(interval_since_ns|sync_duration_ns|vrp_announced|vrp_withdrawn|aspa_announced|aspa_withdrawn)(\\+(interval_since_ns|sync_duration_ns|vrp_announced|vrp_withdrawn|aspa_announced|aspa_withdrawn))*)$",
-          "description": "structural: cache_reset or error_report. statistical: the metric that tripped the hard threshold, or the metrics that crossed the soft threshold joined with + (a correlated trip)."
+          "pattern": "^(cache_reset|error_report|protocol_error|(interval_since_ns|sync_duration_ns|vrp_announced|vrp_withdrawn|aspa_announced|aspa_withdrawn)(\\+(interval_since_ns|sync_duration_ns|vrp_announced|vrp_withdrawn|aspa_announced|aspa_withdrawn))*)$",
+          "description": "structural: cache_reset, error_report, or protocol_error (an error with error_origin client). statistical: the metric that tripped the hard threshold, or the metrics that crossed the soft threshold joined with + (a correlated trip)."
         },
         "severity": {
           "type": "string",
@@ -660,7 +697,8 @@
               "trigger": {
                 "enum": [
                   "cache_reset",
-                  "error_report"
+                  "error_report",
+                  "protocol_error"
                 ]
               },
               "severity": {

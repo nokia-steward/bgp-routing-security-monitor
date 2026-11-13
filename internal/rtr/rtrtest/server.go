@@ -29,6 +29,11 @@ type Delta struct {
 	WithdrawVRPs  []VRP
 	AnnounceASPAs []ASPASet // replaces the customer's provider set
 	WithdrawASPAs []uint32  // customer ASNs
+	// Reannounce are VRPs of the data set the cache announces again and
+	// then withdraws in the same answer, its data set unchanged: Fort
+	// 1.7.0 (NICMx/FORT-validator#204). A client that ignores the
+	// announcement and applies the withdrawal loses them.
+	Reannounce []VRP
 }
 
 // GenVRPs returns n distinct IPv4 VRPs, /24s numbered from first, each
@@ -143,6 +148,10 @@ type Server struct {
 	script   []Action
 	received []Query
 	sessions []*sessionConn // connections answered with a Cache Response, latest last
+	// repeat is sent again, after the data set, in answer to a Reset
+	// Query (RepeatInReset).
+	repeatVRPs  []VRP
+	repeatASPAs []ASPASet
 }
 
 type sessionConn struct {
@@ -188,6 +197,19 @@ func (s *Server) SetData(vrps []VRP, aspas []ASPASet) {
 	}
 }
 
+// RepeatInReset makes the cache announce vrps and aspas a second time in
+// every answer to a Reset Query, after the data set: a cache that announces
+// what it already announced, without a withdrawal in between. Members of
+// the data set only, for a duplicate; others are just extra announcements.
+// An Advance that announces a VRP already in the data set does the same in
+// its Serial Query answer.
+func (s *Server) RepeatInReset(vrps []VRP, aspas []ASPASet) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.repeatVRPs = slices.Clone(vrps)
+	s.repeatASPAs = slices.Clone(aspas)
+}
+
 // Advance applies d as the next serial and returns it. Clients learn of it
 // when they next poll, or at once with Notify.
 func (s *Server) Advance(d Delta) uint32 {
@@ -202,15 +224,15 @@ func (s *Server) Advance(d Delta) uint32 {
 	for _, a := range d.AnnounceASPAs {
 		s.aspas[a.Customer] = slices.Clone(a.Providers)
 	}
-	// A withdrawal names the providers it removes: the client removes
-	// exactly those.
+	// A withdrawal carries no provider list (8210bis §5.12): it removes
+	// the customer's whole record.
 	st := step{
-		announceVRPs:  slices.Clone(d.AnnounceVRPs),
-		withdrawVRPs:  slices.Clone(d.WithdrawVRPs),
+		announceVRPs:  append(slices.Clone(d.AnnounceVRPs), d.Reannounce...),
+		withdrawVRPs:  append(slices.Clone(d.WithdrawVRPs), d.Reannounce...),
 		announceASPAs: slices.Clone(d.AnnounceASPAs),
 	}
 	for _, c := range d.WithdrawASPAs {
-		st.withdrawASPAs = append(st.withdrawASPAs, ASPASet{Customer: c, Providers: s.aspas[c]})
+		st.withdrawASPAs = append(st.withdrawASPAs, ASPASet{Customer: c})
 		delete(s.aspas, c)
 	}
 	s.serial++
@@ -222,6 +244,31 @@ func (s *Server) Advance(d Delta) uint32 {
 type step struct {
 	announceVRPs, withdrawVRPs   []VRP
 	announceASPAs, withdrawASPAs []ASPASet
+	// wire, if set, is the step's Prefix PDUs exactly as sent (AdvanceWire).
+	wire []WirePDU
+}
+
+// WirePDU is one IPv4 or IPv6 Prefix PDU: an announcement or a withdrawal.
+type WirePDU struct {
+	Announce bool
+	VRP      VRP
+}
+
+// AdvanceWire makes the next serial one whose Serial Query answer carries
+// wire, in that order, as a cache sent it (a captured delta), and makes
+// result the data set from then on: what a Reset Query returns. The two are
+// independent: a cache whose deltas do not match its own data, as Fort
+// 1.7.0's (NICMx/FORT-validator#204), is what this replays.
+func (s *Server) AdvanceWire(wire []WirePDU, result []VRP) uint32 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.vrps = map[VRP]bool{}
+	for _, v := range result {
+		s.vrps[v] = true
+	}
+	s.serial++
+	s.history[s.serial] = step{wire: slices.Clone(wire)}
+	return s.serial
 }
 
 // Serial is the cache's current serial.
@@ -406,6 +453,14 @@ func (s *Server) answer(q Query, version uint8) {
 				pdus = append(pdus, ASPA(true, c, s.aspas[c]...))
 			}
 		}
+		for _, v := range s.repeatVRPs {
+			pdus = append(pdus, prefixPDU(version, true, v))
+		}
+		if version >= 2 {
+			for _, a := range s.repeatASPAs {
+				pdus = append(pdus, ASPA(true, a.Customer, a.Providers...))
+			}
+		}
 	case PDUSerialQuery:
 		_, known := s.history[q.Serial+1]
 		if q.Session != s.cfg.Session || (q.Serial != s.serial && !known) || q.Serial > s.serial {
@@ -416,6 +471,9 @@ func (s *Server) answer(q Query, version uint8) {
 		pdus = append(pdus, CacheResponse(version, s.cfg.Session))
 		for serial := q.Serial + 1; serial <= s.serial; serial++ {
 			st := s.history[serial]
+			for _, w := range st.wire {
+				pdus = append(pdus, prefixPDU(version, w.Announce, w.VRP))
+			}
 			for _, v := range st.announceVRPs {
 				pdus = append(pdus, prefixPDU(version, true, v))
 			}

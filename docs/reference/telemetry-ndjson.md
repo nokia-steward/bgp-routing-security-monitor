@@ -151,13 +151,53 @@ version 0, or at a version pinned with `--rtr-version`. The session ends (a
 `disconnected` follows). The detector reports every `error` as a structural
 anomaly.
 
+An `error` with `error_origin` `client` is one RAVEN found in what the cache
+sent, not an Error Report from the cache:
+
+- code 7 (Duplicate Announcement Received): the cache announced a VRP it
+  already held, without withdrawing it first;
+- code 6 (Withdrawal of Unknown Record): the cache withdrew a VRP, or an ASPA
+  customer AS, it did not hold.
+
+RAVEN writes one such record per sync and code, with `error_count`, before
+the sync's `sync` record. The detector reports each as a structural anomaly
+with trigger `protocol_error`.
+
+**RAVEN deviates from RFC 8210 §12 here.** §12 makes codes 6 and 7 fatal: the
+router drops the session (and, in draft-ietf-sidrops-8210bis, flushes the
+cache's data). A monitor must not flush its data because of a cache bug:
+every route it validates would turn NotFound until the cache recovered.
+Instead RAVEN keeps a count per VRP and per cache, announcements less
+withdrawals, never below 0, and holds the VRP while the count is above 0.
+Fort 1.7.0 (NICMx/FORT-validator#204) announces VRPs the router holds and
+withdraws them in the same answer, meaning no change: with the count they
+stay, as the cache meant. A router that ignores the duplicate announcement
+and applies the withdrawal loses them. After a sync with either error RAVEN
+sends a Reset Query on the same session, at most once per 5 minutes per
+cache. The full sync that answers it replaces the cache's data at its End of
+Data, so validation never sees a gap. The session goes on: no
+`disconnected` follows. The `sync` record of that resync has `sync_type`
+`full`.
+
+An ASPA announcement for a customer AS the cache already announced is not an
+error: draft-ietf-sidrops-8210bis §5.12 makes it a replacement of that
+customer's provider set, so ASPA records have no count. An ASPA
+announcement followed by a withdrawal of the same customer in one delta
+raises no error and no resync: the record is removed, as the stream says. A
+withdrawal carries no provider list (a 12-byte PDU) and removes the
+customer's whole record.
+
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
-| `error_code` | integer | always | The RFC 8210 §12 error code |
-| `error_text` | string | absent when the cache sent none | The cache's error text |
+| `error_code` | integer | always | The RFC 8210 §12 error code; with `error_origin`, `6` or `7` |
+| `error_text` | string | absent when the cache sent none | The cache's error text, or RAVEN's description of the error it found (not stable: do not parse it) |
+| `error_origin` | string | only when RAVEN found the error | `client` |
+| `error_count` | integer | with `error_origin` | How many PDUs of the sync had the error |
 
 ```json
 {"timestamp":"2026-11-11T21:06:49.107152206Z","cache":"rtr.example.net:3323","event_type":"error","schema_version":1,"error_text":"Corrupt Data","error_code":0,"proto_version":2}
+{"timestamp":"2026-11-12T09:14:02.551203117Z","cache":"rtr.example.net:3323","event_type":"error","schema_version":1,"error_text":"duplicate announcement received: 2255 records announced again while this cache held them, first 192.0.2.0/24 max-length 24 AS64500; counted","error_code":7,"error_origin":"client","error_count":2255,"proto_version":2}
+{"timestamp":"2026-11-12T09:14:02.551240003Z","cache":"rtr.example.net:3323","event_type":"error","schema_version":1,"error_text":"withdrawal of unknown record: 1 records withdrawn that this cache did not hold, first 198.51.100.0/24 max-length 24 AS64501; ignored","error_code":6,"error_origin":"client","error_count":1,"proto_version":2}
 ```
 
 ### `cache_not_ready`
@@ -223,7 +263,7 @@ an incremental `sync` whose metrics are far outside this cache's normal
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
 | `category` | string | always | `structural` or `statistical` |
-| `trigger` | string | always | structural: `cache_reset` (a `reset`) or `error_report` (an `error`). statistical: the metric that crossed the hard threshold, or, for a correlated trip, the metrics that crossed the soft threshold joined with `+` in the order of [the statistics](#statistics), e.g. `interval_since_ns+sync_duration_ns` |
+| `trigger` | string | always | structural: `cache_reset` (a `reset`), `error_report` (an `error` from the cache) or `protocol_error` (an `error` with `error_origin` `client`). statistical: the metric that crossed the hard threshold, or, for a correlated trip, the metrics that crossed the soft threshold joined with `+` in the order of [the statistics](#statistics), e.g. `interval_since_ns+sync_duration_ns` |
 | `severity` | string | always | `high`: every structural anomaly, and a statistical one past the hard threshold. `medium`: a correlated trip (two or more metrics past the soft threshold) |
 | `z_scores` | object | statistical | For each metric at or above its soft threshold, its modified z-score (unitless; the scale is the window's MAD with a minimum spread, see the detector). Keys are [statistics](#statistics) |
 | `raw` | object | statistical | Every metric's value in the flagged sync: nanoseconds for `*_ns`, counts otherwise. Keys are [statistics](#statistics) |

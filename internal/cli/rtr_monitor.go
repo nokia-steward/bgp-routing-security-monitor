@@ -389,6 +389,12 @@ func observeRTREvent(d *telemetry.Detector, ev telemetry.SessionEvent, log *slog
 			"proto_version", ev.ProtoVersion, "next_proto_version", next, "reason", ev.DowngradeReason)
 		return nil, false
 	case telemetry.EventError:
+		if ev.ErrorOrigin == telemetry.ErrorOriginClient {
+			// An error RAVEN found in what the cache sent (e.g. code 7,
+			// duplicate announcements): the session goes on, but the cache
+			// broke the protocol, which is anomalous by definition.
+			return d.ObserveStructural(ev.Cache, "protocol_error", ev.Timestamp), false
+		}
 		return d.ObserveError(ev.Cache, ev.ErrorCode, ev.Timestamp), false
 	}
 	return nil, false
