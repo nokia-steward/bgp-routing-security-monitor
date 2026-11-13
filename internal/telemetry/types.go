@@ -47,6 +47,14 @@ const (
 	EventVersionDowngrade EventType = "version_downgrade"
 )
 
+// ErrorOriginClient marks an error event RAVEN raised itself, about PDUs the
+// cache sent (see SessionEvent.ErrorOrigin).
+const ErrorOriginClient = "client"
+
+// ErrorCodeDuplicateAnnouncement is RTR error code 7, Duplicate Announcement
+// Received (RFC 8210 §12).
+const ErrorCodeDuplicateAnnouncement uint16 = 7
+
 // DisconnectReason says why a session ended (disconnected events).
 type DisconnectReason string
 
@@ -116,6 +124,13 @@ type SessionEvent struct {
 	// failure).
 	ErrorText string  `json:"error_text,omitempty"`
 	ErrorCode *uint16 `json:"error_code,omitempty"` // RFC 8210 §12 error code
+
+	// ErrorOrigin is ErrorOriginClient on an error RAVEN found in what the
+	// cache sent, rather than an Error Report from the cache (absent). Such
+	// an error does not end the session: RAVEN ignores the PDUs in error.
+	// ErrorCount is how many PDUs of the sync had it.
+	ErrorOrigin string `json:"error_origin,omitempty"`
+	ErrorCount  int    `json:"error_count,omitempty"`
 
 	// ProtoVersion is the session's RTR protocol version, on every event
 	// the RTR client records. Always present, 0 included: version 0 means

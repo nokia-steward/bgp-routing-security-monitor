@@ -56,6 +56,12 @@ type e2eConfig struct {
 	bulkThreshold int
 	// cache, if set, adjusts the fake RTR cache's config.
 	cache func(*rtrtest.ServerConfig)
+	// snapshotDir, if set, turns persistence on with that directory (stale
+	// eviction an hour away).
+	snapshotDir string
+	// repeat are VRPs the cache announces a second time in each full sync
+	// (rtrtest.Server.RepeatInReset).
+	repeat []rtrtest.VRP
 }
 
 // webhookSink is the webhook endpoint: it records every POST.
@@ -135,6 +141,7 @@ func startE2E(t *testing.T, ec e2eConfig) *e2e {
 	}
 	cache := rtrtest.NewServer(t, ccfg)
 	cache.SetData(ec.vrps, ec.aspas)
+	cache.RepeatInReset(ec.repeat, nil)
 	hooks := newWebhookSink(t)
 
 	cfg := &config.Config{}
@@ -146,6 +153,9 @@ func startE2E(t *testing.T, ec e2eConfig) *e2e {
 	cfg.Validation.ASPA = true
 	cfg.Validation.ASPADefaultProcedure = "upstream"
 	cfg.Events.RTRBulkThreshold = ec.bulkThreshold
+	if ec.snapshotDir != "" {
+		cfg.Persistence = config.PersistenceConfig{Enabled: true, SnapshotDir: ec.snapshotDir, StaleEvictionTimeout: time.Hour}
+	}
 	for _, rc := range ec.rules {
 		for i, ac := range rc.Actions {
 			if name, ok := strings.CutPrefix(ac.URL, "hook:"); ok {

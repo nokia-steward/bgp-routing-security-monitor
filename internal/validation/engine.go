@@ -409,3 +409,19 @@ func (rv *Revalidation) revalidate(r *types.Route) {
 		rv.Skipped++
 	}
 }
+
+// RestoreROVReason fills in the ROV reason of a route restored from a
+// snapshot, which keeps only the ROV state (#61): its code, reason text and
+// matched VRPs, from the current VRP store. It changes route only if
+// validating it now gives the state it was restored with, and reports
+// whether it did; a route whose state no longer holds is left for the
+// revalidation that follows the next RTR sync. route must not be in the
+// table yet: routes in the table are never modified in place.
+func (e *Engine) RestoreROVReason(route *types.Route) bool {
+	res := e.rovAnnotator.Validate(route)
+	if res.State != route.ROV.State {
+		return false
+	}
+	route.ROV = res
+	return true
+}

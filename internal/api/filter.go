@@ -24,6 +24,9 @@ type routeFilter struct {
 	origin  uint32     // origin ASN; 0 = any
 	peer    netip.Addr // BMP peer, unmapped; invalid = any
 	posture types.SecurityPosture
+	// afi is the address family a route's prefix must be of: 4, 6, or 0
+	// for either.
+	afi uint8
 	// routers, when byRouter, are the monitored routers a route must come
 	// from: the one router address given, or the routers whose sysName is
 	// the name given (none, if no router has it).
@@ -110,8 +113,23 @@ func parseRIBs(q url.Values) (types.RIBSet, error) {
 	return types.ParseRIBSet(names)
 }
 
-// parseRouteFilter reads the prefix, origin-asn, peer, posture, router and
-// rib query parameters. router is a router address or a BMP sysName; named
+// ParseAFI reads an address family, as the afi query parameter and the CLI's
+// --afi take it: ipv4 or ipv6 (v4 and v6, 4 and 6 also do), or empty for
+// either. It returns 4, 6 or 0.
+func ParseAFI(v string) (uint8, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "":
+		return 0, nil
+	case "ipv4", "v4", "4":
+		return 4, nil
+	case "ipv6", "v6", "6":
+		return 6, nil
+	}
+	return 0, fmt.Errorf("invalid afi %q: want ipv4 or ipv6", v)
+}
+
+// parseRouteFilter reads the prefix, match, origin-asn, peer, posture, afi,
+// router and rib query parameters. router is a router address or a BMP sysName; named
 // resolves a sysName to the routers that have it.
 func parseRouteFilter(q url.Values, named func(string) []netip.Addr) (routeFilter, error) {
 	var f routeFilter
@@ -150,6 +168,11 @@ func parseRouteFilter(q url.Values, named func(string) []netip.Addr) (routeFilte
 		f.peer = a.Unmap()
 	}
 	f.posture = types.SecurityPosture(q.Get("posture"))
+	afi, err := ParseAFI(q.Get("afi"))
+	if err != nil {
+		return f, err
+	}
+	f.afi = afi
 	ribs, err := parseRIBs(q)
 	if err != nil {
 		return f, fmt.Errorf("invalid rib: %w", err)
@@ -169,8 +192,18 @@ func (f *routeFilter) match(r *types.Route) bool {
 		(f.origin == 0 || r.OriginASN() == f.origin) &&
 		(!f.peer.IsValid() || r.PeerAddr.Unmap() == f.peer) &&
 		(f.posture == "" || r.SecurityPosture == f.posture) &&
+		(f.afi == 0 || routeAFI(r.Prefix) == f.afi) &&
 		(!f.byRouter || slices.Contains(f.routers, r.Router.Unmap())) &&
 		ribs.Has(r.RIBType)
+}
+
+// routeAFI is the address family of a route's prefix: 4 or 6. An
+// IPv4-mapped IPv6 prefix is IPv6, as the NLRI that carried it was.
+func routeAFI(p netip.Prefix) uint8 {
+	if p.Addr().Is4() {
+		return 4
+	}
+	return 6
 }
 
 // routes returns the table's routes of the filter's RIBs (the default view
@@ -193,7 +226,7 @@ func (f *routeFilter) routes(t *routetable.Table) []*types.Route {
 		candidates = t.GetByPeerIn(f.peer, f.ribs)
 	case f.posture != "" && routetable.PostureIndexed(f.ribs):
 		candidates = t.GetByPostureIn(f.posture, f.ribs)
-	case f.posture != "" || f.byRouter:
+	case f.posture != "" || f.byRouter || f.afi != 0:
 		candidates = t.AllIn(f.ribs)
 	default:
 		return t.AllIn(f.ribs)

@@ -5,6 +5,15 @@ All notable changes to RAVEN are recorded here.
 ## Unreleased
 
 ### Added
+- `--afi ipv4|ipv6` on `raven routes` and `raven watch`, applied by the
+  daemon (the `afi` parameter of `/api/v1/routes` and `/api/v1/watch`).
+  The `RouteFilter` proto message already had `afi` (field 5).
+- `raven what-if --rib adj-rib-in-pre|adj-rib-in-post|loc-rib|all` (and the
+  `rib` parameter of the what-if API). The default stays Adj-RIB-In
+  pre-policy; `all` counts a route once per RIB it is reported in.
+- `raven_rtr_protocol_errors_total{cache,code}`: PDUs in error from an RTR
+  cache, by RFC 8210 code (7, duplicate announcement; 6, withdrawal of an
+  unknown record).
 - `raven rtr monitor` watches several caches in one process: `--cache` may
   be given more than once. Each cache keeps its own session, VRP/ASPA set,
   anomaly baseline and NDJSON records (told apart by `cache`). After every
@@ -142,6 +151,10 @@ All notable changes to RAVEN are recorded here.
   query the client sent.
 
 ### Changed
+- `raven what-if --reject-invalid` and `--aspa-enforce` print a first
+  summary line, `RIBs covered:`, and the JSON results carry `ribs`; the
+  by-peer table names the `raven routes --peer ... --rib` that lists the
+  same routes. Scripts that parse the table by line number need updating.
 - `raven rtr monitor` NDJSON timestamps are written in UTC (`...Z`), not in
   the host's local time zone. They remain RFC 3339 with nanoseconds and an
   offset, which consumers must honor; files from older releases may carry a
@@ -260,6 +273,63 @@ All notable changes to RAVEN are recorded here.
   Anomaly counts and z values change accordingly.
 
 ### Fixed
+- A VRP an RTR cache announced again without withdrawing it was stored and
+  counted twice: in `vrp_total`, `raven_rtr_vrp_count`, `/api/v1/status`
+  and the ROV trace's matched VRPs (#66). Each distinct VRP now counts once.
+  Per cache, RAVEN keeps a count per VRP, announcements less withdrawals,
+  never below 0, and holds it while the count is above 0: Fort 1.7.0
+  announces VRPs the router holds and withdraws them in the same answer
+  (NICMx/FORT-validator#204), and those VRPs stay, as the cache meant,
+  rather than being lost. The repeat is code 7 (Duplicate Announcement),
+  a withdrawal of a VRP or ASPA customer the cache does not hold code 6
+  (Withdrawal of Unknown Record); both count in the new
+  `raven_rtr_protocol_errors_total{cache,code}`, are logged, and in
+  `raven rtr monitor` are an `error` record per sync and code
+  (`error_origin` `client`, `error_count`) and a high structural anomaly
+  with trigger `protocol_error` (additive to NDJSON schema version 1).
+  After such a sync RAVEN resyncs with a Reset Query on the same session,
+  at most once per 5 minutes per cache. RAVEN deviates from RFC 8210 §12,
+  which makes both codes fatal (drop the session; flush, in
+  draft-ietf-sidrops-8210bis): a monitor must not flush its data on a cache
+  bug, and the count plus the resync keep the state the cache intended.
+  Thanks to Antonio Prado (University of Padova, ASPA Explorer) for
+  reporting the Fort 1.7.0 duplicate-delta pattern.
+- A full RTR sync (Reset Query, Cache Reset, new session) cleared the
+  cache's data at its Cache Response: the VRP count and the ASPA records
+  lookups use dipped until End of Data, and a session that ended mid-sync
+  left the data cleared. A full sync is now built aside and replaces the
+  cache's data at its End of Data; one that does not finish leaves the
+  data as it was.
+- An ASPA announcement for a customer AS the cache already announced was
+  merged into the provider set, so providers the cache dropped stayed, and
+  an ASPA withdrawal without a provider list (as draft-ietf-sidrops-8210bis
+  §5.12 requires) removed nothing. An announcement now replaces that
+  cache's provider set and a withdrawal removes its whole record (§5.12),
+  so after every End of Data the ASPA records equal what a full sync of
+  the cache returns. An announcement and a withdrawal of the same customer
+  in one delta raise no error and no resync: the record is removed. Thanks
+  to Antonio Prado (University of Padova, ASPA Explorer) for reporting the
+  withdrawal bug.
+- With several RTR caches, `raven serve` kept one VRP and ASPA set for all:
+  the same VRP from two caches counted twice, and one cache's full sync
+  dropped every other cache's data until each synced in full again. The
+  stores now record which caches hold each record: a VRP counts once
+  however many caches hold it, it stays while any cache holds it, and a
+  cache's full sync replaces only its own data (and a restored snapshot's).
+  `raven_rtr_vrp_count{cache}` and `raven_rtr_aspa_count{cache}` are that
+  cache's own counts; they were the shared store's total. Single-cache
+  deployments see no difference.
+- Routes restored from a warm-start snapshot had no ROV reason code until a
+  revalidation reached them, so `rov_reason_code` was absent and
+  `what-if --reject-invalid` counted them as `unknown` (#61). The code is
+  now computed from the restored VRPs as the routes are restored. Without
+  an RPKI snapshot the routes wait, out of the table, until the first RTR
+  sync, and come in with their codes before any query or BMP update sees
+  them; a stop before that sync writes them back to the snapshot.
+- `raven routes --peer` for a peer whose routes are all outside the RIBs
+  listed (a router's local-instance peer that sends post-policy only)
+  printed nothing; it now says which RIBs hold them and the `--rib` that
+  lists them.
 - `rov_reason` said `origin ASn not authorized by any covering VRP` for
   every Invalid route with a known origin, including routes from the
   authorized AS that are only longer than its VRP's maxLength, by far the

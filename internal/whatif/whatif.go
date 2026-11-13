@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/nokia/bgp-routing-security-monitor/internal/routetable"
 	"github.com/nokia/bgp-routing-security-monitor/internal/types"
@@ -23,6 +24,9 @@ func NewSimulator(table *routetable.Table) *Simulator {
 // ─── Result types ─────────────────────────────────────────────────────────────
 
 type RejectInvalidResult struct {
+	// RIBs are the RIBs the simulation covered (see ParseRIBs). Older
+	// daemons leave it out.
+	RIBs             []string       `json:"ribs,omitempty"`
 	TotalRoutes      int            `json:"total_routes"`
 	RejectedRoutes   int            `json:"rejected_routes"`
 	AffectedPrefixes int            `json:"affected_prefixes"`
@@ -97,6 +101,7 @@ type PeerImpact struct {
 }
 
 type ASPAEnforceResult struct {
+	RIBs               []string      `json:"ribs,omitempty"`
 	TotalRoutes        int           `json:"total_routes"`
 	RejectedRoutes     int           `json:"rejected_routes"`
 	UnverifiableRoutes int           `json:"unverifiable_routes"`
@@ -117,6 +122,8 @@ type Options struct {
 	TopN         int
 	FilterPeer   string
 	FilterAFI    string
+	// RIBs are the RIBs to simulate on; zero is Adj-RIB-In pre-policy.
+	RIBs types.RIBSet
 }
 
 func defaultOptions(o *Options) *Options {
@@ -128,6 +135,9 @@ func defaultOptions(o *Options) *Options {
 	}
 	if o.TopN == 0 {
 		o.TopN = 10
+	}
+	if o.RIBs == 0 {
+		o.RIBs = DefaultRIBs
 	}
 	return o
 }
@@ -141,7 +151,7 @@ func (s *Simulator) SimulateRejectInvalid(ctx context.Context, opts *Options) (*
 		return nil, fmt.Errorf("whatif: fetch routes: %w", err)
 	}
 
-	res := &RejectInvalidResult{TotalRoutes: len(routes)}
+	res := &RejectInvalidResult{TotalRoutes: len(routes), RIBs: opts.RIBs.Names()}
 
 	prefixSet := make(map[string]struct{})
 	originSet := make(map[uint32]struct{})
@@ -286,7 +296,7 @@ func (s *Simulator) SimulateASPAEnforce(ctx context.Context, opts *Options) (*AS
 		return nil, fmt.Errorf("whatif: fetch routes: %w", err)
 	}
 
-	res := &ASPAEnforceResult{TotalRoutes: len(routes)}
+	res := &ASPAEnforceResult{TotalRoutes: len(routes), RIBs: opts.RIBs.Names()}
 
 	prefixSet := make(map[string]struct{})
 	originSet := make(map[uint32]struct{})
@@ -340,13 +350,9 @@ func (s *Simulator) SimulateASPAEnforce(ctx context.Context, opts *Options) (*AS
 	return res, nil
 }
 
-// fetchRoutes lists the Adj-RIB-In pre-policy routes the simulations run
-// on: what an import policy would drop is a question about the routes
-// received, before policy. Not the default view: a Loc-RIB route is one
-// the router already selected, and a route reported in both RIBs would be
-// counted twice.
+// fetchRoutes lists the routes of opts.RIBs the simulations run on.
 func (s *Simulator) fetchRoutes(ctx context.Context, opts *Options) ([]types.Route, error) {
-	filter := routetable.Filter{RIBs: types.RIBSetOf(types.AdjRIBInPre)}
+	filter := routetable.Filter{RIBs: opts.RIBs}
 	if opts.FilterPeer != "" {
 		filter.PeerAddr = opts.FilterPeer
 	}
@@ -354,4 +360,44 @@ func (s *Simulator) fetchRoutes(ctx context.Context, opts *Options) ([]types.Rou
 		filter.AFI = opts.FilterAFI
 	}
 	return s.table.ListRoutes(ctx, filter)
+}
+
+// DefaultRIBs is what the simulations run on unless told otherwise:
+// Adj-RIB-In pre-policy. What an import policy would drop is a question about
+// the routes received, before policy. Not post-policy, which holds what
+// import policy already let through, and not the default view: a Loc-RIB
+// route is one the router already selected, and a route reported in two RIBs
+// would be counted twice.
+var DefaultRIBs = types.RIBSetOf(types.AdjRIBInPre)
+
+// AllRIBs is --rib all: every inbound RIB and the Loc-RIB. A route a router
+// reports in several of them counts once per RIB.
+var AllRIBs = types.RIBSetOf(types.AdjRIBInPre, types.AdjRIBInPost, types.LocRIB)
+
+// ParseRIBs reads the RIBs to simulate on, as what-if --rib and the rib
+// query parameter take them: adj-rib-in-pre (or pre-policy), adj-rib-in-post
+// (or post-policy), loc-rib, comma-separated, or all; empty is DefaultRIBs.
+// Adj-RIB-Out is refused: it holds what a router sends, not what an import
+// policy sees.
+func ParseRIBs(v string) (types.RIBSet, error) {
+	var names []string
+	for _, n := range strings.Split(v, ",") {
+		if n = strings.TrimSpace(n); n != "" {
+			names = append(names, n)
+		}
+	}
+	switch {
+	case len(names) == 0:
+		return DefaultRIBs, nil
+	case len(names) == 1 && names[0] == "all":
+		return AllRIBs, nil
+	}
+	set, err := types.ParseRIBSet(names)
+	if err != nil {
+		return 0, err
+	}
+	if set&^AllRIBs != 0 {
+		return 0, fmt.Errorf("what-if simulates import policy: want adj-rib-in-pre, adj-rib-in-post, loc-rib or all, not %s", strings.Join((set&^AllRIBs).Names(), ", "))
+	}
+	return set, nil
 }

@@ -88,6 +88,14 @@ var (
 		Help: "RTR protocol version negotiated with the cache (0, 1 or 2; ASPA needs 2).",
 	}, []string{"cache"})
 
+	// Protocol errors RAVEN detected in what an RTR cache sent (RFC 8210 §12
+	// error codes 6 and 7), one per erroneous PDU. Labels: cache, code. The
+	// session goes on (see rtr.Client.applyVRP).
+	RTRProtocolErrors = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "raven_rtr_protocol_errors_total",
+		Help: "PDUs in error from the RTR cache, by RFC 8210 error code (7: duplicate announcement, 6: withdrawal of unknown record).",
+	}, []string{"cache", "code"})
+
 	// RTR anomalies detected by the adaptive detector. Labels: cache, severity.
 	RTRAnomalyTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "raven_rtr_anomaly_total",
