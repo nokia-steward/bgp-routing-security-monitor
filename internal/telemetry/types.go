@@ -99,13 +99,26 @@ type SessionEvent struct {
 	SchemaVersion int `json:"schema_version"`
 
 	// Sync fields — populated when EventType == EventSync.
+	//
+	// The *Announced and *Withdrawn counts are PDUs received: what the
+	// cache sent, re-announcements and their withdrawals included. The
+	// *Added and *Removed counts are the net change: records (for ASPA,
+	// customer ASes) the cache came to hold, or stopped holding, in this
+	// sync; a provider-set replacement is neither. On an incremental sync
+	// without protocol errors they agree, but for ASPA provider-set
+	// replacements and a record announced and withdrawn again in one delta.
+	// A full sync's net change is against the cache's data before it.
 	Serial        uint32        `json:"serial,omitempty"`
 	VRPTotal      int           `json:"vrp_total,omitempty"`
 	VRPAnnounced  int           `json:"vrp_announced,omitempty"`
 	VRPWithdrawn  int           `json:"vrp_withdrawn,omitempty"`
+	VRPAdded      int           `json:"vrp_added,omitempty"`
+	VRPRemoved    int           `json:"vrp_removed,omitempty"`
 	ASPATotal     int           `json:"aspa_total,omitempty"`
 	ASPAAnnounced int           `json:"aspa_announced,omitempty"`
 	ASPAWithdrawn int           `json:"aspa_withdrawn,omitempty"`
+	ASPAAdded     int           `json:"aspa_added,omitempty"`
+	ASPARemoved   int           `json:"aspa_removed,omitempty"`
 	SyncDuration  time.Duration `json:"sync_duration_ns,omitempty"`
 	IntervalSince time.Duration `json:"interval_since_ns,omitempty"`
 	SyncType      SyncType      `json:"sync_type,omitempty"`
@@ -167,9 +180,13 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		VRPTotal      int           `json:"vrp_total"`
 		VRPAnnounced  int           `json:"vrp_announced"`
 		VRPWithdrawn  int           `json:"vrp_withdrawn"`
+		VRPAdded      int           `json:"vrp_added"`
+		VRPRemoved    int           `json:"vrp_removed"`
 		ASPATotal     int           `json:"aspa_total"`
 		ASPAAnnounced int           `json:"aspa_announced"`
 		ASPAWithdrawn int           `json:"aspa_withdrawn"`
+		ASPAAdded     int           `json:"aspa_added"`
+		ASPARemoved   int           `json:"aspa_removed"`
 		SyncDuration  time.Duration `json:"sync_duration_ns"`
 	}{
 		plain:         plain(e),
@@ -177,9 +194,13 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		VRPTotal:      e.VRPTotal,
 		VRPAnnounced:  e.VRPAnnounced,
 		VRPWithdrawn:  e.VRPWithdrawn,
+		VRPAdded:      e.VRPAdded,
+		VRPRemoved:    e.VRPRemoved,
 		ASPATotal:     e.ASPATotal,
 		ASPAAnnounced: e.ASPAAnnounced,
 		ASPAWithdrawn: e.ASPAWithdrawn,
+		ASPAAdded:     e.ASPAAdded,
+		ASPARemoved:   e.ASPARemoved,
 		SyncDuration:  e.SyncDuration,
 	})
 }

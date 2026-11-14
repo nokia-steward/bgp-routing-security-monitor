@@ -234,6 +234,20 @@ func TestFortDelta220To221(t *testing.T) {
 		t.Errorf("delta sync announced %d withdrawn %d total %d, want 2276, 2263, %d",
 			sy.VRPAnnounced, sy.VRPWithdrawn, sy.VRPTotal, len(expected))
 	}
+	// The PDUs received, and the net change: the 2255 re-announced and
+	// withdrawn records are held before and after, and count in neither.
+	if sy.VRPAdded != 21 || sy.VRPRemoved != 8 {
+		t.Errorf("delta sync vrp_added %d vrp_removed %d, want 21 and 8", sy.VRPAdded, sy.VRPRemoved)
+	}
+	if sy.VRPTotal-len(baseline) != sy.VRPAdded-sy.VRPRemoved {
+		t.Errorf("vrp_total went %d -> %d, but vrp_added - vrp_removed is %d",
+			len(baseline), sy.VRPTotal, sy.VRPAdded-sy.VRPRemoved)
+	}
+	// After warm-up on ordinary deltas of this size, the detector does not
+	// flag the faulty delta: it is a protocol_error, not a burst.
+	if a := scoreAfterWarmup(sy, 21, 8); a != nil {
+		t.Errorf("the Fort delta raised a statistical anomaly: %+v", a)
+	}
 	if got := heldSet(h); !slices.Equal(got, vrpSet(expected)) {
 		t.Errorf("after the delta the store holds %d VRPs, want %d (baseline %d + 21 - 8)", len(got), len(expected), len(baseline))
 	}
@@ -258,6 +272,9 @@ func TestFortDelta220To221(t *testing.T) {
 	waitResets(t, h, 2)
 	if s := h.waitEvents(t, telemetry.EventSync, 3)[2]; s.SyncType != telemetry.SyncTypeFull {
 		t.Errorf("sync after the resync is %s, want full", s.SyncType)
+	} else if s.VRPAnnounced != len(expected) || s.VRPAdded != 0 || s.VRPRemoved != 0 {
+		t.Errorf("resync full sync: vrp_announced %d vrp_added %d vrp_removed %d, want %d, 0, 0 (the same set)",
+			s.VRPAnnounced, s.VRPAdded, s.VRPRemoved, len(expected))
 	}
 	if got := heldSet(h); !slices.Equal(got, vrpSet(expected)) {
 		t.Errorf("after the resync the store holds %d VRPs, want the same %d", len(got), len(expected))
@@ -349,6 +366,14 @@ func TestFortDelta219To220(t *testing.T) {
 			}
 			if n := len(errorsOf(h, 6)); n != 0 {
 				t.Errorf("%d code 6 events, want none: every withdrawn record was held", n)
+			}
+			// The net change is order-independent too: the 731 announced
+			// and withdrawn records are held before and after, whichever
+			// PDU comes first.
+			sy := h.eventsOf(telemetry.EventSync)[1]
+			if sy.VRPAnnounced != 764 || sy.VRPWithdrawn != 760 || sy.VRPAdded != 33 || sy.VRPRemoved != 29 {
+				t.Errorf("sync announced %d withdrawn %d added %d removed %d, want 764, 760, 33, 29",
+					sy.VRPAnnounced, sy.VRPWithdrawn, sy.VRPAdded, sy.VRPRemoved)
 			}
 		})
 	}

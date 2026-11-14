@@ -173,14 +173,26 @@ type Totals struct {
 func TotalsOf(ev SessionEvent) Totals { return Totals{VRPs: ev.VRPTotal, ASPAs: ev.ASPATotal} }
 
 // SyncMetrics builds the metric map ObserveSync expects from a sync event.
+//
+// The count statistics keep their names (vrp_announced, ...) but take the
+// sync's net change (vrp_added, vrp_removed, aspa_added, aspa_removed), not
+// the PDUs received: a cache that re-announces records it holds and
+// withdraws them again (Fort 1.7.0, NICMx/FORT-validator#204) changed
+// nothing, and is reported as a protocol_error, not also as a burst of
+// announcements. Without protocol errors an incremental sync's net change
+// equals its PDU counts, so baselines saved from PDU counts stay valid. The
+// exceptions are legitimate but carry no net change: an ASPA announcement
+// that replaces a customer's provider set, and a record announced and
+// withdrawn again in one delta. They now count 0, never more than before,
+// and only values above the median can trip.
 func SyncMetrics(ev SessionEvent) map[string]float64 {
 	return map[string]float64{
 		MetricIntervalSince: float64(ev.IntervalSince),
 		MetricSyncDuration:  float64(ev.SyncDuration),
-		MetricVRPAnnounced:  float64(ev.VRPAnnounced),
-		MetricVRPWithdrawn:  float64(ev.VRPWithdrawn),
-		MetricASPAAnnounced: float64(ev.ASPAAnnounced),
-		MetricASPAWithdrawn: float64(ev.ASPAWithdrawn),
+		MetricVRPAnnounced:  float64(ev.VRPAdded),
+		MetricVRPWithdrawn:  float64(ev.VRPRemoved),
+		MetricASPAAnnounced: float64(ev.ASPAAdded),
+		MetricASPAWithdrawn: float64(ev.ASPARemoved),
 	}
 }
 

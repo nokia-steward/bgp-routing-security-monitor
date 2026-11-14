@@ -71,7 +71,13 @@ func SeedBaseline(r io.Reader) (*Detector, *SeedSummary, error) {
 		}
 
 		// Absent JSON fields unmarshal to zero, matching the live path's
-		// "default optional metrics to 0" convention.
+		// "default optional metrics to 0" convention. A record from a RAVEN
+		// before the net counts has none of them: its PDU counts stand in,
+		// which is what such a RAVEN's detector observed.
+		if !hasNetCounts([]byte(line)) {
+			ev.VRPAdded, ev.VRPRemoved = ev.VRPAnnounced, ev.VRPWithdrawn
+			ev.ASPAAdded, ev.ASPARemoved = ev.ASPAAnnounced, ev.ASPAWithdrawn
+		}
 		detector.ObserveSyncTotals(ev.Cache, ev.Timestamp, SyncMetrics(ev), TotalsOf(ev))
 	}
 	if err := scanner.Err(); err != nil {
@@ -111,4 +117,14 @@ func (d *Detector) windowFills() []SeedWindowFill {
 		}
 	}
 	return fills
+}
+
+// hasNetCounts reports whether a sync record carries the net counts
+// (vrp_added, vrp_removed, aspa_added, aspa_removed), which RAVEN writes on
+// every sync record since they were added.
+func hasNetCounts(line []byte) bool {
+	var probe struct {
+		VRPAdded *int `json:"vrp_added"`
+	}
+	return json.Unmarshal(line, &probe) == nil && probe.VRPAdded != nil
 }
