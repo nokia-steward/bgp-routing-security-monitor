@@ -107,27 +107,62 @@ since the last serial), including a poll that finds nothing new.
 
 Every field but `interval_since_ns` is always present, 0 included. Files
 from older releases omit `serial`, the counts and `sync_duration_ns` when
-they are 0.
+they are 0, and have no `vrp_added`, `vrp_removed`, `aspa_added` or
+`aspa_removed`.
 
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
 | `sync_type` | string | always | `full` or `incremental` |
 | `serial_changed` | boolean | always | The serial differs from the previous sync's, in this process, across sessions: `true` on the first sync; a full sync of a new session can be `false` |
 | `serial` | integer | always, 0 included | The cache's serial from End of Data (0 to 4294967295) |
-| `vrp_total` | integer | always, 0 included | VRPs held after the sync. A VRP the cache announced twice counts twice |
-| `vrp_announced` | integer | always, 0 included | VRP announcement PDUs in this sync (IPv4 and IPv6). On a full sync, the whole set |
-| `vrp_withdrawn` | integer | always, 0 included | VRP withdrawal PDUs in this sync |
+| `vrp_total` | integer | always, 0 included | Distinct VRPs this cache holds after the sync. A VRP the cache announced twice counts once |
+| `vrp_announced` | integer | always, 0 included | VRP announcement PDUs received in this sync (IPv4 and IPv6), re-announcements included. On a full sync, the whole set |
+| `vrp_withdrawn` | integer | always, 0 included | VRP withdrawal PDUs received in this sync |
+| `vrp_added` | integer | always, 0 included | VRPs this cache came to hold in this sync: the net change. On a full sync, against the cache's data before it |
+| `vrp_removed` | integer | always, 0 included | VRPs this cache stopped holding in this sync: the net change. On a full sync, against the cache's data before it |
 | `aspa_total` | integer | always, 0 included | ASPA records held after the sync: customer ASes. 0 below RTR version 2 |
-| `aspa_announced` | integer | always, 0 included | ASPA announcement PDUs in this sync (one per customer AS) |
-| `aspa_withdrawn` | integer | always, 0 included | ASPA withdrawal PDUs in this sync |
+| `aspa_announced` | integer | always, 0 included | ASPA announcement PDUs received in this sync (one per customer AS) |
+| `aspa_withdrawn` | integer | always, 0 included | ASPA withdrawal PDUs received in this sync |
+| `aspa_added` | integer | always, 0 included | Customer ASes this cache came to hold a record for in this sync. A provider-set replacement is neither added nor removed |
+| `aspa_removed` | integer | always, 0 included | Customer ASes whose record this cache stopped holding in this sync |
 | `sync_duration_ns` | integer | always, 0 included | Nanoseconds from sending the query to receiving End of Data |
 | `interval_since_ns` | integer | absent on the first sync of the process | Nanoseconds since the previous sync's End of Data in this process, across sessions |
 
 ```json
-{"timestamp":"2026-11-11T21:06:49.089760506Z","cache":"rtr.example.net:3323","event_type":"sync","schema_version":1,"sync_type":"full","serial_changed":true,"proto_version":1,"serial":0,"vrp_total":0,"vrp_announced":0,"vrp_withdrawn":0,"aspa_total":0,"aspa_announced":0,"aspa_withdrawn":0,"sync_duration_ns":318784}
-{"timestamp":"2026-11-11T21:06:49.091708344Z","cache":"rtr.example.net:3323","event_type":"sync","schema_version":1,"sync_type":"full","serial_changed":true,"proto_version":2,"serial":0,"vrp_total":50,"vrp_announced":50,"vrp_withdrawn":0,"aspa_total":2,"aspa_announced":2,"aspa_withdrawn":0,"sync_duration_ns":1369810}
-{"timestamp":"2026-11-11T21:06:49.097425939Z","cache":"rtr.example.net:3323","event_type":"sync","schema_version":1,"interval_since_ns":5717680,"sync_type":"incremental","serial_changed":true,"proto_version":2,"serial":1,"vrp_total":1247,"vrp_announced":1200,"vrp_withdrawn":3,"aspa_total":2,"aspa_announced":1,"aspa_withdrawn":1,"sync_duration_ns":1897959}
+{"timestamp":"2026-11-11T21:06:49.089760506Z","cache":"rtr.example.net:3323","event_type":"sync","schema_version":1,"sync_type":"full","serial_changed":true,"proto_version":1,"serial":0,"vrp_total":0,"vrp_announced":0,"vrp_withdrawn":0,"vrp_added":0,"vrp_removed":0,"aspa_total":0,"aspa_announced":0,"aspa_withdrawn":0,"aspa_added":0,"aspa_removed":0,"sync_duration_ns":318784}
+{"timestamp":"2026-11-11T21:06:49.091708344Z","cache":"rtr.example.net:3323","event_type":"sync","schema_version":1,"sync_type":"full","serial_changed":true,"proto_version":2,"serial":0,"vrp_total":50,"vrp_announced":50,"vrp_withdrawn":0,"vrp_added":50,"vrp_removed":0,"aspa_total":2,"aspa_announced":2,"aspa_withdrawn":0,"aspa_added":2,"aspa_removed":0,"sync_duration_ns":1369810}
+{"timestamp":"2026-11-11T21:06:49.097425939Z","cache":"rtr.example.net:3323","event_type":"sync","schema_version":1,"interval_since_ns":5717680,"sync_type":"incremental","serial_changed":true,"proto_version":2,"serial":1,"vrp_total":1247,"vrp_announced":1200,"vrp_withdrawn":3,"vrp_added":1200,"vrp_removed":3,"aspa_total":2,"aspa_announced":1,"aspa_withdrawn":1,"aspa_added":1,"aspa_removed":1,"sync_duration_ns":1897959}
 ```
+
+#### PDUs received and net change
+
+`vrp_announced`, `vrp_withdrawn`, `aspa_announced` and `aspa_withdrawn`
+count the PDUs the cache sent. `vrp_added`, `vrp_removed`, `aspa_added`
+and `aspa_removed` count what changed: the records this cache came to hold,
+or stopped holding, by the end of the sync. A record it held before and
+still holds after counts in neither, whatever PDUs it took.
+
+For a correct cache's incremental sync they agree: every announcement adds
+a record, every withdrawal removes one. They differ when the cache announces
+what it holds (a duplicate announcement, error code 7). Fort 1.7.0's delta
+from serial 220 to 221 (NICMx/FORT-validator#204) sent 2276 VRP
+announcements and 2263 withdrawals: 2255 records the client held were
+announced again and then withdrawn. Only 21 VRPs were new and 8 withdrawn
+for good. The sync record, its other fields left out:
+
+```text
+{"event_type":"sync","sync_type":"incremental","serial":221,"vrp_total":2276,"vrp_announced":2276,"vrp_withdrawn":2263,"vrp_added":21,"vrp_removed":8, ...}
+```
+
+Two legitimate cases differ too, with no error: an ASPA announcement for a
+customer the cache already has a record for replaces its provider set
+(8210bis §5.12) and counts in `aspa_announced` but not `aspa_added`; and a
+record announced and withdrawn again in one sync counts one of each PDU and
+no net change.
+
+On a full sync the PDU counts are the cache's whole data set, and the net
+counts its difference from the data the cache had before: a resync that
+returns the same data has `vrp_added` and `vrp_removed` 0.
 
 ### `reset`
 
@@ -455,8 +490,14 @@ cache's `anomaly` record is written as well.
 
 The metrics the detector scores, as keys of `z_scores` and `raw` and in
 `trigger`, in this order: `interval_since_ns`, `sync_duration_ns`,
-`vrp_announced`, `vrp_withdrawn`, `aspa_announced`, `aspa_withdrawn`. They
-are the `sync` fields of the same names.
+`vrp_announced`, `vrp_withdrawn`, `aspa_announced`, `aspa_withdrawn`.
+`interval_since_ns` and `sync_duration_ns` are the `sync` fields of the
+same names. The four counts are the sync's net change: `vrp_added`,
+`vrp_removed`, `aspa_added` and `aspa_removed`, under the names they have
+always had (see [PDUs received and net change](#pdus-received-and-net-change)).
+A delta that duplicates records is reported as a `protocol_error`, not also
+as a burst of announcements. On a correct cache's incremental sync the
+values are the PDU counts, as before.
 
 ### Divergence kind
 

@@ -268,6 +268,22 @@ func TestCorrectCacheNoFaults(t *testing.T) {
 	if got := heldSet(h); !slices.Equal(got, vrpSet(s[3:], rtrtest.GenVRPs(102, 3, 65002))) {
 		t.Errorf("store holds %d VRPs, want %d", len(got), 20-3+3)
 	}
+	// The net change is the PDUs received: every announcement added a
+	// record, every withdrawal removed one. The one exception is delta 2's
+	// ASPA announcement, which replaces AS64500's provider set (8210bis
+	// §5.12): an announcement PDU, no record added.
+	for i, sy := range h.eventsOf(telemetry.EventSync) {
+		wantASPAAdded := sy.ASPAAnnounced
+		if i == 2 {
+			wantASPAAdded = 0
+		}
+		if sy.VRPAdded != sy.VRPAnnounced || sy.VRPRemoved != sy.VRPWithdrawn ||
+			sy.ASPAAdded != wantASPAAdded || sy.ASPARemoved != sy.ASPAWithdrawn {
+			t.Errorf("sync %d: VRPs announced/added %d/%d withdrawn/removed %d/%d, ASPA %d/%d %d/%d; want added %d",
+				i, sy.VRPAnnounced, sy.VRPAdded, sy.VRPWithdrawn, sy.VRPRemoved,
+				sy.ASPAAnnounced, sy.ASPAAdded, sy.ASPAWithdrawn, sy.ASPARemoved, wantASPAAdded)
+		}
+	}
 }
 
 // An ASPA announcement for a customer AS the cache already announced is not

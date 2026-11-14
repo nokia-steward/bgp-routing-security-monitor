@@ -94,6 +94,7 @@ func TestASPADriftMatchesFullSync(t *testing.T) {
 		}
 	}
 	check("initial full sync")
+	prevVRPs, prevASPAs := h.vrpStore.OwnerCount(h.owner), aspaContents(h.aspaStore)
 
 	for i, d := range []rtrtest.Delta{
 		// The Routinator case: one customer withdrawn, no providers.
@@ -112,6 +113,20 @@ func TestASPADriftMatchesFullSync(t *testing.T) {
 			t.Fatalf("delta %d: sync %+v, want incremental at serial %d", i+1, sy, serial)
 		}
 		check(fmt.Sprintf("after delta %d", i+1))
+		// The net change agrees with the data: the customers that came and
+		// went, and for VRPs the total's change. A provider-set
+		// replacement is neither added nor removed.
+		sy := h.eventsOf(telemetry.EventSync)[i+1]
+		nowASPAs := aspaContents(h.aspaStore)
+		came, went := customerDiff(prevASPAs, nowASPAs)
+		if sy.ASPAAdded != came || sy.ASPARemoved != went {
+			t.Errorf("delta %d: aspa_added %d aspa_removed %d, want %d and %d (customers that came and went)",
+				i+1, sy.ASPAAdded, sy.ASPARemoved, came, went)
+		}
+		if got := int(h.vrpStore.OwnerCount(h.owner)) - int(prevVRPs); sy.VRPAdded-sy.VRPRemoved != got {
+			t.Errorf("delta %d: vrp_added - vrp_removed = %d, the VRP total changed by %d", i+1, sy.VRPAdded-sy.VRPRemoved, got)
+		}
+		prevVRPs, prevASPAs = h.vrpStore.OwnerCount(h.owner), nowASPAs
 	}
 	if h.aspaStore.HasRecord(64500) {
 		t.Error("AS64500, announced then withdrawn in one delta, still has a record")
@@ -128,4 +143,23 @@ func TestASPADriftMatchesFullSync(t *testing.T) {
 	if main != 1 {
 		t.Errorf("%d Reset Queries on the client's session, want 1 (no self-healing resync)", main)
 	}
+}
+
+// customerDiff counts the customer ASes in now and not before, and in before
+// and not now.
+func customerDiff(before, now []types.ASPARecord) (came, went int) {
+	has := func(recs []types.ASPARecord, c uint32) bool {
+		return slices.ContainsFunc(recs, func(r types.ASPARecord) bool { return r.CustomerASN == c })
+	}
+	for _, r := range now {
+		if !has(before, r.CustomerASN) {
+			came++
+		}
+	}
+	for _, r := range before {
+		if !has(now, r.CustomerASN) {
+			went++
+		}
+	}
+	return came, went
 }

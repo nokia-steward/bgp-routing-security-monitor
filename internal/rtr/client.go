@@ -199,10 +199,18 @@ type Client struct {
 	tel           *telemetry.Recorder
 	syncStart     time.Time // when the current sync's query was sent
 	lastSyncTime  time.Time // EndOfData time of the previous completed sync
-	vrpAnnounced  int       // per-sync counters, reset on each Cache Response
+	vrpAnnounced  int       // per-sync PDU counters, reset on each Cache Response
 	vrpWithdrawn  int
 	aspaAnnounced int
 	aspaWithdrawn int
+	// vrpNet and aspaNet are an incremental sync's net change per record at
+	// this cache: +1 for one it came to hold, -1 for one it stopped holding,
+	// 0 for one it holds as before (Fort's announce-then-withdraw, a record
+	// announced and withdrawn again). Reset on each Cache Response; End of
+	// Data counts them into the sync record's vrp_added, vrp_removed,
+	// aspa_added and aspa_removed. A full sync's come from ReplaceOwner.
+	vrpNet  map[types.VRP]int8
+	aspaNet map[uint32]int8
 	// faults counts this sync's PDUs in error by RFC 8210 error code (6,
 	// 7), faultFirst describes the first of each; reset on each Cache
 	// Response and reported at End of Data (reportFaults).
@@ -833,6 +841,7 @@ func (c *Client) runSession(ctx context.Context) (err error) {
 			// the EndOfData telemetry reflects only this sync's deltas.
 			c.vrpAnnounced, c.vrpWithdrawn = 0, 0
 			c.aspaAnnounced, c.aspaWithdrawn = 0, 0
+			c.vrpNet, c.aspaNet = make(map[types.VRP]int8), make(map[uint32]int8)
 			c.faults, c.faultFirst = nil, nil
 			// A full sync rebuilds the stores (and sessionEstablished may
 			// have cleared ASPA): only a full revalidation follows it.
@@ -878,7 +887,7 @@ func (c *Client) runSession(ctx context.Context) (err error) {
 			// delta is no fault: the record is removed, as the stream says.
 			// A withdrawal of a customer this cache has no record for is
 			// code 6.
-			var changed bool
+			var changed, replaced bool
 			known := true
 			switch {
 			case c.aspaStage != nil && withdraw:
@@ -887,8 +896,14 @@ func (c *Client) runSession(ctx context.Context) (err error) {
 				c.aspaStage.Announce(customerASN, providerASNs)
 			case withdraw:
 				changed, known = c.aspaStore.Withdraw(c.owner, customerASN)
+				if known {
+					netChange(c.aspaNet, customerASN, -1)
+				}
 			default:
-				changed, _ = c.aspaStore.Announce(c.owner, customerASN, providerASNs)
+				changed, replaced = c.aspaStore.Announce(c.owner, customerASN, providerASNs)
+				if !replaced { // a provider-set replacement is no net change
+					netChange(c.aspaNet, customerASN, +1)
+				}
 			}
 			if withdraw {
 				c.aspaWithdrawn++
@@ -1008,12 +1023,18 @@ func (c *Client) sessionEstablished(version uint8) {
 // updates metrics and telemetry, re-arms the expiry timer and, if the data
 // changed, notifies the update callback.
 func (c *Client) endOfData(sessionID uint16, eod endOfData) (faults map[uint16]int) {
+	var vrpAdded, vrpRemoved, aspaAdded, aspaRemoved int
 	if c.vrpStage != nil {
-		// A full sync: its data replaces this cache's, whole, now.
-		c.vrpStore.ReplaceOwner(c.owner, c.vrpStage)
-		c.aspaStore.ReplaceOwner(c.owner, c.aspaStage)
+		// A full sync: its data replaces this cache's, whole, now. Its net
+		// change is against the data it replaces.
+		vrpAdded, vrpRemoved = c.vrpStore.ReplaceOwner(c.owner, c.vrpStage)
+		aspaAdded, aspaRemoved = c.aspaStore.ReplaceOwner(c.owner, c.aspaStage)
 		c.vrpStage, c.aspaStage = nil, nil
+	} else {
+		vrpAdded, vrpRemoved = netCounts(c.vrpNet)
+		aspaAdded, aspaRemoved = netCounts(c.aspaNet)
 	}
+	c.vrpNet, c.aspaNet = nil, nil
 	serialChanged := !c.haveSerial || eod.serial != c.serial
 	applied := c.vrpAnnounced + c.vrpWithdrawn + c.aspaAnnounced + c.aspaWithdrawn
 	dataChanged := c.fullSyncPending || serialChanged || applied > 0
@@ -1052,9 +1073,13 @@ func (c *Client) endOfData(sessionID uint16, eod endOfData) (faults map[uint16]i
 		VRPTotal:      int(c.vrpStore.OwnerCount(c.owner)),
 		VRPAnnounced:  c.vrpAnnounced,
 		VRPWithdrawn:  c.vrpWithdrawn,
+		VRPAdded:      vrpAdded,
+		VRPRemoved:    vrpRemoved,
 		ASPATotal:     c.aspaStore.OwnerCount(c.owner),
 		ASPAAnnounced: c.aspaAnnounced,
 		ASPAWithdrawn: c.aspaWithdrawn,
+		ASPAAdded:     aspaAdded,
+		ASPARemoved:   aspaRemoved,
 		SyncDuration:  now.Sub(c.syncStart),
 		SyncType:      syncType,
 		ProtoVersion:  c.protoVersion,
@@ -1437,14 +1462,43 @@ func (c *Client) applyVRP(vrp types.VRP, withdraw bool) {
 		}
 		if released {
 			c.recorder().VRP(vrp, true)
+			netChange(c.vrpNet, vrp, -1)
 		}
 	default:
 		if c.vrpStore.AddVRPFrom(c.owner, vrp) {
 			c.recorder().VRP(vrp, false)
+			netChange(c.vrpNet, vrp, +1)
 		} else {
 			c.fault(errCodeDuplicateAnnouncement, vrpText(vrp))
 		}
 	}
+}
+
+// netChange records that an incremental sync made this cache hold (d +1)
+// or stop holding (d -1) record k. A record the sync both adds and removes
+// nets out at 0 and is dropped.
+func netChange[K comparable](m map[K]int8, k K, d int8) {
+	if m == nil {
+		return
+	}
+	if n := m[k] + d; n == 0 {
+		delete(m, k)
+	} else {
+		m[k] = n
+	}
+}
+
+// netCounts returns how many records of an incremental sync's net change
+// the cache came to hold, and how many it stopped holding.
+func netCounts[K comparable](m map[K]int8) (added, removed int) {
+	for _, n := range m {
+		if n > 0 {
+			added++
+		} else {
+			removed++
+		}
+	}
+	return added, removed
 }
 
 func vrpText(v types.VRP) string {

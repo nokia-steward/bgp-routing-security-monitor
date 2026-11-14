@@ -5,6 +5,14 @@ All notable changes to RAVEN are recorded here.
 ## Unreleased
 
 ### Added
+- `vrp_added`, `vrp_removed`, `aspa_added` and `aspa_removed` on every
+  `raven rtr monitor` `sync` record, 0 included: the records (for ASPA,
+  customer ASes) the cache came to hold, or stopped holding, in the sync,
+  where `vrp_announced` and the others count the PDUs received. A full sync
+  counts against the cache's data before it; an ASPA provider-set
+  replacement is neither added nor removed. In Fort 1.7.0's delta 220 to 221
+  that is 2276 announcements and 2263 withdrawals, but 21 VRPs added and 8
+  removed. Additive to NDJSON schema version 1. Asked for by ASPA Explorer.
 - `--afi ipv4|ipv6` on `raven routes` and `raven watch`, applied by the
   daemon (the `afi` parameter of `/api/v1/routes` and `/api/v1/watch`).
   The `RouteFilter` proto message already had `afi` (field 5).
@@ -151,6 +159,19 @@ All notable changes to RAVEN are recorded here.
   query the client sent.
 
 ### Changed
+- The anomaly detector's `vrp_announced`, `vrp_withdrawn`, `aspa_announced`
+  and `aspa_withdrawn` statistics take the sync's net change (`vrp_added`,
+  `vrp_removed`, `aspa_added`, `aspa_removed`) instead of the PDU counts. A
+  delta that duplicates records (error code 7) is reported as a
+  `protocol_error` only, no longer also as a statistical anomaly on the
+  duplicated volume. On a VRP incremental sync without protocol errors the
+  values are the same, so saved baselines (`--anomaly-snapshot`,
+  `raven rtr seed-baseline`) stay valid. Two legitimate cases now count 0
+  where they counted 1: an ASPA announcement replacing a customer's provider
+  set, and a record announced and withdrawn again in one delta. Values can
+  only be lower than before, and only values above the median trip.
+  `seed-baseline` reads older NDJSON files, which have no net counts, by
+  their PDU counts.
 - `raven what-if --reject-invalid` and `--aspa-enforce` print a first
   summary line, `RIBs covered:`, and the JSON results carry `ribs`; the
   by-peer table names the `raven routes --peer ... --rib` that lists the

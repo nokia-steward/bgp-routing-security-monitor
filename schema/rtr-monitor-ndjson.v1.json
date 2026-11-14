@@ -214,17 +214,27 @@
         "vrp_total": {
           "type": "integer",
           "minimum": 0,
-          "description": "VRPs held after the sync (duplicate announcements counted). Always present, 0 included."
+          "description": "Distinct VRPs this cache holds after the sync (a VRP announced twice counts once). Always present, 0 included."
         },
         "vrp_announced": {
           "type": "integer",
           "minimum": 0,
-          "description": "VRP announcement PDUs in this sync. Always present, 0 included."
+          "description": "VRP announcement PDUs received in this sync, re-announcements included. Always present, 0 included."
         },
         "vrp_withdrawn": {
           "type": "integer",
           "minimum": 0,
-          "description": "VRP withdrawal PDUs in this sync. Always present, 0 included."
+          "description": "VRP withdrawal PDUs received in this sync. Always present, 0 included."
+        },
+        "vrp_added": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "VRPs this cache came to hold in this sync: the net change, not the PDUs (a re-announcement of a held VRP adds none). A full sync counts against the cache's data before it. Always present, 0 included, in records from RAVENs that write it; absent in older ones."
+        },
+        "vrp_removed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "VRPs this cache stopped holding in this sync: the net change, not the PDUs. A full sync counts against the cache's data before it. Always present, 0 included, in records from RAVENs that write it; absent in older ones."
         },
         "aspa_total": {
           "type": "integer",
@@ -240,6 +250,16 @@
           "type": "integer",
           "minimum": 0,
           "description": "ASPA withdrawal PDUs in this sync. Always present, 0 included."
+        },
+        "aspa_added": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Customer ASes this cache came to hold an ASPA record for in this sync: the net change (a provider-set replacement is neither added nor removed). A full sync counts against the cache's data before it. Always present, 0 included, in records from RAVENs that write it; absent in older ones."
+        },
+        "aspa_removed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Customer ASes whose ASPA record this cache stopped holding in this sync: the net change. A full sync counts against the cache's data before it. Always present, 0 included, in records from RAVENs that write it; absent in older ones."
         },
         "sync_duration_ns": {
           "type": "integer",

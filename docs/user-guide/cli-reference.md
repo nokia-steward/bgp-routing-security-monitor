@@ -1369,6 +1369,10 @@ the compatibility policy. Build parsers against that page.
 - Each incremental sync is scored against rolling per-metric windows
   (`interval_since_ns`, `sync_duration_ns`, `vrp_announced`, `vrp_withdrawn`,
   `aspa_announced`, `aspa_withdrawn`) using median/MAD adaptive thresholds.
+  The four counts are the sync's net change (the record's `vrp_added`,
+  `vrp_removed`, `aspa_added`, `aspa_removed`), not the PDUs received: a
+  cache that re-announces records it holds is reported as a
+  `protocol_error`, not also as a burst of announcements.
 - **Full resyncs are recorded but not evaluated** — a full table dump reports
   nearly the entire VRP/ASPA set as "announced", which is not comparable to
   incremental deltas and would trip a false positive.

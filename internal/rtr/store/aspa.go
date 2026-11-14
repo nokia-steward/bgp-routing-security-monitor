@@ -294,13 +294,23 @@ func (r *ASPARecord) HasProvider(providerASN uint32) bool {
 // Unowned ones (a restored snapshot): a full sync's End of Data. Records
 // another owner has stay. Lookups see the old records or the new, never a
 // mix of none: a full sync never shows a gap.
-func (s *ASPAStore) ReplaceOwner(o Owner, stage *ASPAStage) {
+//
+// added and removed are the customer ASes o has a record for now and had
+// none for before, and the reverse: the sync's net change at this cache. A
+// customer whose provider set the stage replaces counts in neither.
+func (s *ASPAStore) ReplaceOwner(o Owner, stage *ASPAStage) (added, removed int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for c := range stage.records {
+		if _, had := s.owners[c][o]; !had {
+			added++
+		}
+	}
 	for c, byOwner := range s.owners {
 		if _, ok := byOwner[o]; ok {
 			if _, next := stage.records[c]; !next {
 				s.setLocked(o, c, nil)
+				removed++
 			}
 		}
 		if _, ok := byOwner[Unowned]; ok {
@@ -310,6 +320,7 @@ func (s *ASPAStore) ReplaceOwner(o Owner, stage *ASPAStage) {
 	for c, ps := range stage.records {
 		s.setLocked(o, c, ps)
 	}
+	return added, removed
 }
 
 // ASPAStage is one cache's ASPA records as a full sync builds them, aside

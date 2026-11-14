@@ -190,9 +190,26 @@ func (s *VRPStore) clearOwnerLocked(o Owner) {
 // owner also holds stay, held by it. The caller then publishes with
 // RebuildIndex; until then lookups see the previous set, so a full sync
 // never shows a gap.
-func (s *VRPStore) ReplaceOwner(o Owner, stage *VRPStage) {
+//
+// added and removed are the VRPs o holds now and did not before, and held
+// before and does not now: the sync's net change at this cache. The
+// Unowned VRPs dropped are not o's and count in neither.
+func (s *VRPStore) ReplaceOwner(o Owner, stage *VRPStage) (added, removed int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	bit := uint64(1) << o
+	var kept uint64
+	for _, v := range stage.order {
+		if stage.counts[v] == 0 {
+			continue
+		}
+		if s.vrps[v].owners&bit != 0 {
+			kept++
+		} else {
+			added++
+		}
+	}
+	removed = int(s.owned[o] - kept)
 	s.clearOwnerLocked(o)
 	for _, v := range stage.order {
 		n := stage.counts[v]
@@ -203,6 +220,7 @@ func (s *VRPStore) ReplaceOwner(o Owner, stage *VRPStage) {
 			s.extra[ownedVRP{o, v}] = n - 1
 		}
 	}
+	return added, removed
 }
 
 // ReplaceAll replaces the entire VRP set, as Unowned, and publishes it (used
