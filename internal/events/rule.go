@@ -49,10 +49,12 @@ func (r *Rule) Evaluate(ctx context.Context, event Event) {
 //
 // An rtr_bulk_change event goes to notification actions only (webhook,
 // log): it stands for routes whose per-route actions were suppressed, and
-// must never produce a FlowSpec rule, per route or aggregate. Enrichers do
-// not run for it either; it has no route to annotate.
+// must never produce a FlowSpec rule, per route or aggregate. So do
+// rtr_stale and rtr_data_regressed: they are about a cache's data, and
+// stale data is no reason to filter traffic. Enrichers do not run for any
+// of them; they have no route to annotate.
 func (r *Rule) fire(ctx context.Context, event Event) {
-	bulk := event.Type == EventTypeRTRBulkChange
+	bulk := notificationOnly(event.Type)
 	if !r.checkCooldown(event) {
 		return
 	}
@@ -107,6 +109,9 @@ func (r *Rule) checkCooldown(event Event) bool {
 func cooldownKey(event Event) string {
 	if event.Type == EventTypeCacheUnhealthy {
 		return "cache|" + event.CacheName
+	}
+	if event.Type == EventTypeRTRStale || event.Type == EventTypeRTRDataRegressed {
+		return string(event.Type) + "|" + event.CacheName
 	}
 	if event.Route == nil {
 		return string(event.Type)

@@ -62,6 +62,10 @@ type e2eConfig struct {
 	// repeat are VRPs the cache announces a second time in each full sync
 	// (rtrtest.Server.RepeatInReset).
 	repeat []rtrtest.VRP
+	// staleThreshold, if set, is rtr.stale-threshold; dataTick, if set,
+	// how often serve evaluates data age between syncs.
+	staleThreshold time.Duration
+	dataTick       time.Duration
 }
 
 // webhookSink is the webhook endpoint: it records every POST.
@@ -153,6 +157,7 @@ func startE2E(t *testing.T, ec e2eConfig) *e2e {
 	cfg.Validation.ASPA = true
 	cfg.Validation.ASPADefaultProcedure = "upstream"
 	cfg.Events.RTRBulkThreshold = ec.bulkThreshold
+	cfg.RTR.StaleThreshold = ec.staleThreshold
 	if ec.snapshotDir != "" {
 		cfg.Persistence = config.PersistenceConfig{Enabled: true, SnapshotDir: ec.snapshotDir, StaleEvictionTimeout: time.Hour}
 	}
@@ -171,6 +176,7 @@ func startE2E(t *testing.T, ec e2eConfig) *e2e {
 		t.Fatal(err)
 	}
 	h := &e2e{t: t, s: s, cache: cache, hooks: hooks, done: make(chan error, 1)}
+	s.dataTick = ec.dataTick
 	s.testEmitted = func(ev events.Event) {
 		h.mu.Lock()
 		h.emitted = append(h.emitted, ev)

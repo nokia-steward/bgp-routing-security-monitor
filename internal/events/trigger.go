@@ -146,6 +146,22 @@ func (t *RTRBulkChangeTrigger) Matches(event Event) bool {
 	return event.Type == EventTypeRTRBulkChange
 }
 
+// RTRStaleTrigger fires on rtr_stale events: an RTR cache whose data has
+// stopped changing.
+type RTRStaleTrigger struct{}
+
+// Matches returns true for any rtr_stale event.
+func (t *RTRStaleTrigger) Matches(event Event) bool { return event.Type == EventTypeRTRStale }
+
+// RTRDataRegressedTrigger fires on rtr_data_regressed events: an RTR cache
+// that returned to earlier data.
+type RTRDataRegressedTrigger struct{}
+
+// Matches returns true for any rtr_data_regressed event.
+func (t *RTRDataRegressedTrigger) Matches(event Event) bool {
+	return event.Type == EventTypeRTRDataRegressed
+}
+
 // hasBulkTrigger reports whether t is, or contains, an rtr_bulk_change
 // trigger: whether its rule asked for bulk changes.
 func hasBulkTrigger(t Trigger) bool {

@@ -5,6 +5,51 @@ All notable changes to RAVEN are recorded here.
 ## Unreleased
 
 ### Added
+- Data staleness and returns to earlier data, in `raven rtr monitor` and
+  `raven serve`. A cache can sync on time while its data stops changing, or
+  can go back to data it served earlier, for example after an anycast
+  reconnect lands on a lagging node. RAVEN now watches the data (VRPs and
+  ASPAs), not serials:
+  - Every `sync` record carries `data_fingerprint`, an order-independent
+    fingerprint of the cache's set. It is kept in O(1) per record changed,
+    16 bytes per cache.
+  - RAVEN learns each cache's gaps between data changes, across sessions.
+    The data is stale past max(4 x median, 3 x p90, 30m) of those gaps, or
+    4h until 20 gaps are known. `--stale-threshold` and
+    `rtr.stale-threshold` override this.
+  - Each stale episode gives one `stale` record and one `stale_resolved`.
+    The data age is checked at every sync and every 15 seconds, so a cache
+    goes stale when its threshold passes, and a cache that stops syncing
+    goes stale too.
+  - A sync that returns to one of the cache's last 50 sets (from the last
+    7 days) gives `data_regressed`, if that set was current in all, or has
+    been gone, for longer than the stale threshold. It is not counted as a
+    change, and the data's age is that set's. A briefer return (churn) is a
+    normal change.
+  - `stale` and `data_regressed` come with structural anomalies (`data_stale`,
+    `data_regressed`).
+  - With several `--cache`, `stale` says whether every compared cache went
+    stale together (`scope` `upstream`) or not (`local`).
+  - `stale` says whether the cache was `connected` (serving frozen data) or
+    `disconnected` (unreachable while its last data ages), as `cache_state`,
+    also on the `rtr_stale` webhook. `stale_resolved` says how it ended, as
+    `resolution` (`data_change`, `reconnect_new_data`). A disconnected cache
+    that reconnects with the same data stays in the same episode.
+  - New metrics `raven_rtr_data_age_seconds{cache}`, `raven_rtr_stale{cache,cache_state}`
+    and `raven_rtr_data_regressions_total{cache}`.
+  - In `raven serve`, the event triggers `rtr_stale` and `rtr_data_regressed`
+    fire once per episode and per return. They reach notification actions
+    only, never FlowSpec.
+  - The learned gaps are saved in the anomaly snapshot and seeded by
+    `raven rtr seed-baseline`, as additive `data_gaps`. Older snapshots load
+    with no gap history.
+  - Additive to NDJSON schema version 1: one new `sync` field and three
+    record types. See the new Data Staleness reference page.
+
+  Thanks to ASPA Explorer (University of Padova) for the records of an
+  anycast-node stall on `rtr.rpki.cloudflare.com:8282` (12 to 13 November
+  2026: 1,033,733 VRPs unchanged for 39 hours across 40 hourly syncs), now
+  the fixture `internal/telemetry/testdata/anycast-node-stall-2026-11-12.ndjson`.
 - `vrp_added`, `vrp_removed`, `aspa_added` and `aspa_removed` on every
   `raven rtr monitor` `sync` record, 0 included: the records (for ASPA,
   customer ASes) the cache came to hold, or stopped holding, in the sync,

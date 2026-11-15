@@ -37,6 +37,7 @@ nav = [
   ] },
   { "Reference" = [
     { "Telemetry NDJSON" = "reference/telemetry-ndjson.md" },
+    { "Data Staleness" = "reference/data-staleness.md" },
   ] },
   { "Troubleshooting" = "troubleshooting.md" },
   { "Changelog" = "CHANGELOG.md" },

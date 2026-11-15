@@ -45,6 +45,7 @@ rtr:
         tls-min-version: "1.2"      # 1.2 (default) | 1.3
   rtr-version: auto                 # auto | 0 | 1 | 2: highest version to try (default: auto, i.e. 2)
   expire-interval: 7200             # Override every cache's Expire Interval (600-172800 s; default: the cache's own)
+  stale-threshold: 0s               # How long data may go unchanged before rtr_stale (default 0: learned per cache)
 
 validation:
   rov: true                         # Enable ROV annotation (default: true)
@@ -139,6 +140,13 @@ and never makes RAVEN do TLS work on its behalf.
 **`rtr.caches`** — List of RPKI validators to connect to. RAVEN connects to
 all configured caches and uses the one with the lowest preference number as
 primary. If the primary fails, it falls back to the next.
+
+**`rtr.stale-threshold`** — How long a cache's data (its VRPs and ASPAs,
+whatever its serial) may go without changing before RAVEN reports it stale:
+`raven_rtr_stale`, a WARN log line and one `rtr_stale` event per episode. The
+default, `0`, learns the threshold per cache from its gaps between data
+changes: max(4 x median, 3 x 90th percentile, 30m), and 4h until 20 gaps are
+known. See [Data Staleness](../reference/data-staleness.md).
 
 **`rtr.rtr-version`** — The highest RTR protocol version to try. RAVEN
 opens each cache's session at this version and falls back to lower ones
@@ -580,6 +588,8 @@ events:
 | `cache_unhealthy` | Fires when an RTR cache becomes unreachable |
 | `source` | Fires on events whose change came from one of `sources`: `bmp` (a BMP announcement or withdrawal) or `rtr` (revalidation after an RTR update). Use it in a `compound` trigger to keep a rule to one kind of change |
 | `rtr_bulk_change` | Fires once for a revalidation pass that changes the posture of more routes than `events.rtr-bulk-threshold`, whether or not another rule matches them (see [RTR bulk guard](#rtr-bulk-guard)) |
+| `rtr_stale` | Fires once when an RTR cache's data starts a stale episode: it syncs, but its VRPs and ASPAs have not changed for longer than its threshold (see `rtr.stale-threshold`). Notification actions only (webhook, log), never FlowSpec |
+| `rtr_data_regressed` | Fires when an RTR cache returns to a data set it served earlier, e.g. a reconnect to a lagging anycast node. Notification actions only, never FlowSpec |
 | `rib` | Fires on routes in one of the RIBs in `ribs`: `adj-rib-in-pre` (or `pre-policy`), `adj-rib-in-post` (or `post-policy`), `loc-rib`, `adj-rib-out-pre`, `adj-rib-out-post`. Use it in a `compound` trigger to keep a rule to some RIBs. An empty `ribs` or an unknown name is a configuration error |
 | `compound` | Combines sub-`triggers` with an `operator` of `and` or `or` |
 
@@ -629,7 +639,16 @@ authorized originators in matched VRPs — present only when there are covering 
 `source` says what made the change: `bmp` (an announcement or withdrawal)
 or `rtr` (revalidation after an RTR update, which also carries the cache's
 `serial`). `type` is `new_route`, `posture_change`, `route_withdraw`,
-`cache_unhealthy` or `rtr_bulk_change`.
+`cache_unhealthy`, `rtr_bulk_change`, `rtr_stale` or `rtr_data_regressed`.
+
+An `rtr_stale` or `rtr_data_regressed` payload has no route fields. It has
+`cache_name`, `serial` and a `data` object. For `rtr_stale`, `data` holds
+`last_change`, `gap_ns`, `threshold_ns`, `threshold_source`,
+`syncs_without_change` and `cache_state` (`connected`: the cache answers,
+serving frozen data; `disconnected`: it cannot be reached while its last
+data ages). For `rtr_data_regressed`, it holds `serial_before`,
+`serial_after`, `first_current`, `last_current` and `ago_ns`. See
+[Data Staleness](../reference/data-staleness.md).
 
 ### RTR bulk guard
 

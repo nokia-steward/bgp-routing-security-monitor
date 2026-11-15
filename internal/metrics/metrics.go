@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"time"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -101,6 +103,30 @@ var (
 		Name: "raven_rtr_anomaly_total",
 		Help: "Total RTR anomalies detected, by severity.",
 	}, []string{"cache", "severity"})
+
+	// Data staleness (telemetry.DataTracker). Label: cache.
+	//
+	// RTRDataAge is how long the cache's current data set has been current:
+	// since it was first current, for a return to earlier data. It grows
+	// while the cache syncs without its data changing.
+	RTRDataAge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "raven_rtr_data_age_seconds",
+		Help: "Seconds the RTR cache's current data set (VRPs and ASPAs) has been current, whatever its serial.",
+	}, []string{"cache"})
+	// RTRStale is 1 during a stale episode, on the series of the cache's
+	// connection state when the episode began (cache_state: connected, a
+	// cache serving frozen data; disconnected, one that cannot be reached
+	// while its last data ages), and 0 on the other. Both are 0 when the
+	// data is not stale.
+	RTRStale = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "raven_rtr_stale",
+		Help: "1 while the RTR cache's data has gone unchanged for longer than its staleness threshold, on the series of its connection state when that began (cache_state connected or disconnected), else 0.",
+	}, []string{"cache", "cache_state"})
+	// RTRDataRegressions counts returns to an earlier data set.
+	RTRDataRegressions = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "raven_rtr_data_regressions_total",
+		Help: "Total syncs at which the RTR cache returned to a data set it had served earlier.",
+	}, []string{"cache"})
 
 	// Unix timestamp of the most recent RTR anomaly detected. Label: cache.
 	RTRAnomalyLastTimestamp = promauto.NewGaugeVec(prometheus.GaugeOpts{
@@ -321,5 +347,19 @@ func init() {
 				RoutesTotal.WithLabelValues(posture, afi, rib)
 			}
 		}
+	}
+}
+
+// SetRTRData sets cache's data age and stale flags: staleState is the stale
+// episode's cache_state ("connected" or "disconnected"), empty when the
+// data is not stale.
+func SetRTRData(cache string, age time.Duration, staleState string) {
+	RTRDataAge.WithLabelValues(cache).Set(age.Seconds())
+	for _, state := range []string{"connected", "disconnected"} {
+		v := 0.0
+		if state == staleState {
+			v = 1
+		}
+		RTRStale.WithLabelValues(cache, state).Set(v)
 	}
 }

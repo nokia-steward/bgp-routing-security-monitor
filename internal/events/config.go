@@ -180,6 +180,12 @@ func buildTrigger(tc config.TriggerConfig) (Trigger, error) {
 	case "rtr_bulk_change":
 		return &RTRBulkChangeTrigger{}, nil
 
+	case "rtr_stale":
+		return &RTRStaleTrigger{}, nil
+
+	case "rtr_data_regressed":
+		return &RTRDataRegressedTrigger{}, nil
+
 	case "rib":
 		if len(tc.RIBs) == 0 {
 			return nil, fmt.Errorf("rib trigger requires at least one rib")

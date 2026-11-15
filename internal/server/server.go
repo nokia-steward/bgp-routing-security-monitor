@@ -82,6 +82,12 @@ type Server struct {
 	rtrLastSync map[string]int64 // cache address → unix seconds of last sync
 	rtrASPA     map[string]bool  // cache address → its last sync was at RTR version 2 (has ASPA)
 
+	// data tracks each cache's data staleness and returns to earlier data
+	// (observeData); nil on a Server not made by New.
+	data *telemetry.DataTracker
+	// dataTick, if set, replaces dataGaugeEvery. Tests only.
+	dataTick time.Duration
+
 	// Owned by ingestLoop.
 	removals []*pendingRemoval
 	// retired holds BMP sessions a newer session from the same router has
@@ -218,7 +224,9 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 		revalidateCh: make(chan struct{}, 1),
 		evictCh:      make(chan struct{}, 1),
 		listening:    make(chan struct{}),
+		data:         telemetry.NewDataTracker(),
 	}
+	srv.data.SetThreshold(cfg.RTR.StaleThreshold)
 
 	// Existing API server
 	srv.bmpListen.SetAllowedRouters(allowed)
@@ -427,6 +435,13 @@ func (s *Server) RunContext(parent context.Context) error {
 		}
 	}()
 
+	// RTR data age gauges, between syncs too.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.runDataGauges(ctx)
+	}()
+
 	// Event engine (Phase 3 active response)
 	if s.eventEngine != nil {
 		wg.Add(1)
@@ -606,7 +621,15 @@ func (s *Server) wireRTRClient(client *rtr.Client, addr string) {
 		s.rtrStates[addr] = 0
 		s.rtrMu.Unlock()
 		metrics.RTRDisconnectsTotal.WithLabelValues(addr, string(reason)).Inc()
+		if s.data != nil {
+			// Staleness from here on is a cache that cannot be reached.
+			s.data.Observe(telemetry.SessionEvent{Timestamp: time.Now(), Cache: addr, EventType: telemetry.EventDisconnected})
+		}
 	})
+	if s.data != nil {
+		metrics.RTRDataRegressions.WithLabelValues(addr)
+		client.SetOnSyncEvent(s.observeData)
+	}
 	client.SetOnSync(func() {
 		// Last-sync time for StateReader/OTel.
 		s.rtrMu.Lock()

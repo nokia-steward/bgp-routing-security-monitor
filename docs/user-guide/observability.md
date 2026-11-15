@@ -144,6 +144,9 @@ raven_rtr_last_serial_change_seconds{cache="localhost:3323"}  # Unix time of the
 raven_rtr_data_expired{cache="localhost:3323"}                # 1 if no sync completed within the Expire Interval
 raven_rtr_protocol_version{cache="localhost:3323"}            # Negotiated RTR version (ASPA needs 2)
 raven_rtr_disconnects_total{cache="localhost:3323", reason="eof"}  # RTR sessions that ended, by reason
+raven_rtr_data_age_seconds{cache="localhost:3323"}            # How long the cache's current data set has been current, whatever its serial
+raven_rtr_stale{cache="localhost:3323", cache_state="connected"}  # 1 while the data has gone unchanged longer than the cache's threshold (cache_state: connected or disconnected)
+raven_rtr_data_regressions_total{cache="localhost:3323"}      # Syncs that returned to a data set the cache served earlier
 ```
 
 `reason` is the same set `raven rtr monitor` writes as `disconnect_reason`:
@@ -171,6 +174,63 @@ already in the table, by what caused them: `bmp` (an announcement) or `rtr`
 events) is full; each one counts in `raven_watch_events_dropped_total`, and
 RAVEN logs once when a watcher starts dropping and once when it catches up.
 See [RTR bulk guard](configuration.md#rtr-bulk-guard) for the bulk metrics.
+
+#### Data staleness
+
+`raven_rtr_last_serial_change_seconds` cannot show a cache whose serial
+moves while its data does not, or one that went back to old data on a
+reconnect to another anycast node. The data metrics look at the data itself,
+the cache's set of VRPs and ASPA records:
+
+- `raven_rtr_data_age_seconds` is how long the current set has been current,
+  across sessions. It is updated at every sync and every 15 s. After a return
+  to earlier data, it counts from when that set was first current.
+- `raven_rtr_stale` is 1 once the age exceeds the cache's threshold, on the
+  series of `cache_state` `connected` (the cache answers, serving frozen
+  data) or `disconnected` (it cannot be reached while its last data ages),
+  as the episode began, and 0 on the other. The threshold is learned
+  from its own gaps between data changes: max(4 x median, 3 x 90th
+  percentile, 30m), or 4h until 20 gaps are known. `rtr.stale-threshold`
+  overrides it.
+- `raven_rtr_data_regressions_total` counts returns to an earlier set.
+
+RAVEN also logs a WARN line when an episode starts and on each return, and
+an INFO line when an episode ends. The `rtr_stale` and `rtr_data_regressed`
+event triggers send one webhook per episode and per return. See
+[Data Staleness](../reference/data-staleness.md) for the details and two
+real cases.
+
+```yaml
+- alert: RTRCacheDataStale
+  expr: raven_rtr_stale{cache_state="connected"} == 1
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "RTR cache {{ $labels.cache }} answers, but its data has stopped changing"
+    description: >-
+      Data age {{ with printf "raven_rtr_data_age_seconds{cache='%s'}" $labels.cache | query }}{{ . | first | value | humanizeDuration }}{{ end }}.
+      A validator that stopped re-validating, or an anycast node serving old data.
+
+- alert: RTRCacheUnreachableDataAging
+  expr: raven_rtr_stale{cache_state="disconnected"} == 1
+  labels:
+    severity: warning
+  annotations:
+    summary: "RTR cache {{ $labels.cache }} cannot be reached, and its last data is past its staleness threshold"
+
+- alert: RTRCacheDataRegressed
+  expr: increase(raven_rtr_data_regressions_total[15m]) > 0
+  labels:
+    severity: warning
+  annotations:
+    summary: "RTR cache {{ $labels.cache }} went back to a data set it served earlier"
+```
+
+`raven_rtr_stale == 1` alone is the alert; the `cache_state` label tells a
+cache serving frozen data from one RAVEN cannot reach. `raven_rtr_data_age_seconds` is
+there for the annotation and for dashboards: raw age is no alert by itself,
+because how long data normally goes unchanged differs from cache to cache.
 
 #### ASPA verification
 
@@ -308,7 +368,8 @@ startup, so an alert can tell "none yet" from "not exported":
 `raven_revalidation_routes_total`, `raven_aspa_validations_total`,
 `raven_bmp_malformed_updates_total` (every action and reason pair it can
 carry), `raven_route_posture_changes_total` (every source and posture pair),
-`raven_rtr_disconnects_total` (every reason, per configured cache), the
+`raven_rtr_disconnects_total` (every reason, per configured cache),
+`raven_rtr_data_regressions_total` (per configured cache), the
 `raven_global_check_*` counters once a provider is enabled, and
 `raven_rtr_anomaly_total` per cache in `raven rtr monitor`.
 `raven_bmp_unsupported_nlri_total` appears only once an unsupported family

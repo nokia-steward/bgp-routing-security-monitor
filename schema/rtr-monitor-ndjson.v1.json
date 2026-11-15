@@ -36,6 +36,15 @@
     },
     {
       "$ref": "#/$defs/upstream_change"
+    },
+    {
+      "$ref": "#/$defs/stale"
+    },
+    {
+      "$ref": "#/$defs/stale_resolved"
+    },
+    {
+      "$ref": "#/$defs/data_regressed"
     }
   ],
   "$defs": {
@@ -270,6 +279,11 @@
           "type": "integer",
           "minimum": 0,
           "description": "Nanoseconds since the previous sync's End of Data in this process. Absent on the first sync and when 0."
+        },
+        "data_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$",
+          "description": "The cache's data set as of this sync, VRPs and ASPA records, as an order-independent fingerprint: 32 hex digits, equal for equal sets whatever order or session they came in. Staleness and data_regressed compare these, not serials. Absent from records of RAVENs before it."
         }
       },
       "required": [
@@ -626,8 +640,8 @@
         },
         "trigger": {
           "type": "string",
-          "pattern": "^(cache_reset|error_report|protocol_error|(interval_since_ns|sync_duration_ns|vrp_announced|vrp_withdrawn|aspa_announced|aspa_withdrawn)(\\+(interval_since_ns|sync_duration_ns|vrp_announced|vrp_withdrawn|aspa_announced|aspa_withdrawn))*)$",
-          "description": "structural: cache_reset, error_report, or protocol_error (an error with error_origin client). statistical: the metric that tripped the hard threshold, or the metrics that crossed the soft threshold joined with + (a correlated trip)."
+          "pattern": "^(cache_reset|error_report|protocol_error|data_stale|data_regressed|(interval_since_ns|sync_duration_ns|vrp_announced|vrp_withdrawn|aspa_announced|aspa_withdrawn)(\\+(interval_since_ns|sync_duration_ns|vrp_announced|vrp_withdrawn|aspa_announced|aspa_withdrawn))*)$",
+          "description": "structural: cache_reset, error_report, protocol_error (an error with error_origin client), data_stale (with a stale record) or data_regressed (with a data_regressed record). statistical: the metric that tripped the hard threshold, or the metrics that crossed the soft threshold joined with + (a correlated trip)."
         },
         "severity": {
           "type": "string",
@@ -718,7 +732,9 @@
                 "enum": [
                   "cache_reset",
                   "error_report",
-                  "protocol_error"
+                  "protocol_error",
+                  "data_stale",
+                  "data_regressed"
                 ]
               },
               "severity": {
@@ -1176,6 +1192,284 @@
         "overlap",
         "settle_ns",
         "samples"
+      ],
+      "additionalProperties": false
+    },
+    "stale": {
+      "type": "object",
+      "description": "A stale episode began: the cache's data (VRPs and ASPA records) has not changed for longer than its threshold, whether it goes on syncing or not; checked at every sync and every 15 seconds. One record per episode.",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1,
+          "description": "Version of this contract. Records written before it existed have none."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the event happened: RFC 3339 with up to nanosecond precision and a UTC offset, which consumers must honor. RAVEN writes UTC (Z); files from older releases may carry the host's local offset."
+        },
+        "cache": {
+          "type": "string",
+          "description": "The cache, as given to --cache (host:port)."
+        },
+        "event_type": {
+          "const": "stale",
+          "description": "A stale episode began: the cache's data (VRPs and ASPA records) has not changed for longer than its threshold, whether it goes on syncing or not; checked at every sync and every 15 seconds. One record per episode."
+        },
+        "serial": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The cache's serial at detection. For information only: serials restart with every session and differ between anycast nodes."
+        },
+        "last_change": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the current data set became current: its last change, or for a return to earlier data when that set was first current."
+        },
+        "gap_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Nanoseconds from last_change to this record."
+        },
+        "expected_gap_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The threshold gap_ns exceeded: max(4 x median, 3 x 90th percentile of this cache's gaps between data changes, 30 minutes), 4 hours before 20 gaps are known, or --stale-threshold."
+        },
+        "syncs_without_change": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Syncs since the last data change that saw no change."
+        },
+        "threshold_source": {
+          "type": "string",
+          "enum": [
+            "learned",
+            "default",
+            "configured"
+          ],
+          "description": "Where expected_gap_ns came from: learned from the gaps, the 4-hour default (fewer than 20 gaps known), or --stale-threshold."
+        },
+        "gaps_learned": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many gaps between data changes the threshold had to learn from (at most 500)."
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "upstream",
+            "local"
+          ],
+          "description": "With several --cache only: upstream if every compared cache went stale within the settle window, local if not. The record is held until that is known, at most the settle window. Absent with one cache."
+        },
+        "cache_state": {
+          "type": "string",
+          "enum": [
+            "connected",
+            "disconnected"
+          ],
+          "description": "The cache's connection state when the episode began. connected: the cache answers, serving data that does not change. disconnected: the cache cannot be reached (no session) while its last data, still in use, ages. A disconnected cache that reconnects with the same data stays in the episode."
+        }
+      },
+      "required": [
+        "schema_version",
+        "timestamp",
+        "cache",
+        "event_type",
+        "serial",
+        "last_change",
+        "gap_ns",
+        "expected_gap_ns",
+        "syncs_without_change",
+        "threshold_source",
+        "gaps_learned",
+        "cache_state"
+      ],
+      "additionalProperties": false
+    },
+    "stale_resolved": {
+      "type": "object",
+      "description": "A stale episode ended: the cache's data changed. A return to earlier data does not end one.",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1,
+          "description": "Version of this contract. Records written before it existed have none."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the event happened: RFC 3339 with up to nanosecond precision and a UTC offset, which consumers must honor. RAVEN writes UTC (Z); files from older releases may carry the host's local offset."
+        },
+        "cache": {
+          "type": "string",
+          "description": "The cache, as given to --cache (host:port)."
+        },
+        "event_type": {
+          "const": "stale_resolved",
+          "description": "A stale episode ended: the cache's data changed. A return to earlier data does not end one."
+        },
+        "stale_since": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the stale record was written."
+        },
+        "duration_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Nanoseconds from stale_since to this record: how long the episode lasted."
+        },
+        "last_change": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the data that went stale became current."
+        },
+        "gap_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Nanoseconds from last_change to this record: how long the data went unchanged."
+        },
+        "serial_before": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The serial before this sync."
+        },
+        "serial_after": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The serial of this sync."
+        },
+        "sync_type": {
+          "type": "string",
+          "enum": [
+            "full",
+            "incremental"
+          ],
+          "description": "The type of the sync that changed the data."
+        },
+        "resolution": {
+          "type": "string",
+          "enum": [
+            "data_change",
+            "reconnect_new_data"
+          ],
+          "description": "How the episode ended. data_change: the data changed within a session. reconnect_new_data: the first sync after a reconnect brought new data. A reconnect to the same data does not end an episode."
+        },
+        "vrp_added": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "That sync's net change, as on its sync record."
+        },
+        "vrp_removed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "That sync's net change, as on its sync record."
+        },
+        "aspa_added": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "That sync's net change, as on its sync record."
+        },
+        "aspa_removed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "That sync's net change, as on its sync record."
+        }
+      },
+      "required": [
+        "schema_version",
+        "timestamp",
+        "cache",
+        "event_type",
+        "stale_since",
+        "duration_ns",
+        "last_change",
+        "gap_ns",
+        "serial_before",
+        "serial_after",
+        "sync_type",
+        "vrp_added",
+        "vrp_removed",
+        "aspa_added",
+        "aspa_removed",
+        "resolution"
+      ],
+      "additionalProperties": false
+    },
+    "data_regressed": {
+      "type": "object",
+      "description": "The cache returned to a data set it served earlier (among its last 50, none current more than 7 days ago), inside a session or after a reconnect: a lagging anycast node, say. Only a significant return: that set was current in all, or has been gone, for longer than the stale threshold; a briefer one is churn, a data change. Not a data change: the staleness clock runs from when that set was first current.",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1,
+          "description": "Version of this contract. Records written before it existed have none."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the event happened: RFC 3339 with up to nanosecond precision and a UTC offset, which consumers must honor. RAVEN writes UTC (Z); files from older releases may carry the host's local offset."
+        },
+        "cache": {
+          "type": "string",
+          "description": "The cache, as given to --cache (host:port)."
+        },
+        "event_type": {
+          "const": "data_regressed",
+          "description": "The cache returned to a data set it served earlier (among its last 50, none current more than 7 days ago), inside a session or after a reconnect: a lagging anycast node, say. Only a significant return: that set was current in all, or has been gone, for longer than the stale threshold; a briefer one is churn, a data change. Not a data change: the staleness clock runs from when that set was first current."
+        },
+        "serial_before": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The serial before this sync."
+        },
+        "serial_after": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The serial of this sync."
+        },
+        "sync_type": {
+          "type": "string",
+          "enum": [
+            "full",
+            "incremental"
+          ],
+          "description": "The type of the sync that returned to the earlier set: full after a reconnect, incremental inside a session."
+        },
+        "data_fingerprint": {
+          "type": "string",
+          "description": "The earlier set's fingerprint, as on sync records (or, replaying records from before data_fingerprint, a stand-in of serial and totals)."
+        },
+        "first_current": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When that set was first current. The staleness clock runs from here."
+        },
+        "last_current": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When that set was last current: when it stopped being current."
+        },
+        "ago_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Nanoseconds from last_current to this record."
+        }
+      },
+      "required": [
+        "schema_version",
+        "timestamp",
+        "cache",
+        "event_type",
+        "serial_before",
+        "serial_after",
+        "sync_type",
+        "data_fingerprint",
+        "first_current",
+        "last_current",
+        "ago_ns"
       ],
       "additionalProperties": false
     }

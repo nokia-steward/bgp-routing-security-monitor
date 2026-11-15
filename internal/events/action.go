@@ -143,6 +143,31 @@ type webhookPayload struct {
 	Serial uint32 `json:"serial,omitempty"`
 	// Bulk is set on rtr_bulk_change events only.
 	Bulk *bulkPayload `json:"bulk,omitempty"`
+	// Data is set on rtr_stale and rtr_data_regressed events only.
+	Data *dataPayload `json:"data,omitempty"`
+}
+
+// dataPayload is an rtr_stale or rtr_data_regressed event's data state in a
+// webhook payload; each event type has its own fields.
+type dataPayload struct {
+	LastChange         string `json:"last_change,omitempty"`
+	GapNS              int64  `json:"gap_ns,omitempty"`
+	ThresholdNS        int64  `json:"threshold_ns,omitempty"`
+	ThresholdSource    string `json:"threshold_source,omitempty"`
+	SyncsWithoutChange int    `json:"syncs_without_change,omitempty"`
+	CacheState         string `json:"cache_state,omitempty"`
+	SerialBefore       uint32 `json:"serial_before,omitempty"`
+	SerialAfter        uint32 `json:"serial_after,omitempty"`
+	FirstCurrent       string `json:"first_current,omitempty"`
+	LastCurrent        string `json:"last_current,omitempty"`
+	AgoNS              int64  `json:"ago_ns,omitempty"`
+}
+
+func formatTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339Nano)
 }
 
 // bulkPayload is an rtr_bulk_change event's summary in a webhook payload.
@@ -310,6 +335,12 @@ func (a *WebhookAction) buildPayload(event Event) webhookPayload {
 		p.Bulk = &bulkPayload{Threshold: b.Threshold, Suppressed: b.Suppressed,
 			Changes: countsPayload(b.Changes), Matched: countsPayload(b.Matched)}
 	}
+	if d := event.Data; d != nil {
+		p.Data = &dataPayload{LastChange: formatTime(d.LastChange), GapNS: int64(d.Gap), ThresholdNS: int64(d.Threshold),
+			ThresholdSource: d.ThresholdSource, SyncsWithoutChange: d.SyncsWithoutChange, CacheState: d.CacheState,
+			SerialBefore: d.SerialBefore, SerialAfter: d.SerialAfter,
+			FirstCurrent: formatTime(d.FirstCurrent), LastCurrent: formatTime(d.LastCurrent), AgoNS: int64(d.Ago)}
+	}
 	if event.Route != nil {
 		p.Prefix = event.Route.Prefix.String()
 		p.PeerAddr = event.Route.PeerAddr.String()
@@ -367,7 +398,7 @@ func (a *FlowspecAction) Name() string { return "flowspec" }
 // An rtr_bulk_change event never gets here (Rule.fire keeps it to
 // notification actions); if one did, it has no route and injects nothing.
 func (a *FlowspecAction) Execute(ctx context.Context, event Event) error {
-	if event.Route == nil || event.Type == EventTypeRTRBulkChange {
+	if event.Route == nil || notificationOnly(event.Type) {
 		return nil
 	}
 

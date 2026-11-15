@@ -134,6 +134,7 @@ type Client struct {
 	sessionVersion atomic.Uint32
 	onUpdate       func(*store.Delta)
 	onSync         func()
+	onSyncEvent    func(telemetry.SessionEvent)
 	onDisconnect   func(telemetry.DisconnectReason)
 	lastSerial     atomic.Uint32 // serial, for Serial
 	readyOnce      sync.Once
@@ -351,6 +352,28 @@ func (c *Client) SetOnSync(fn func()) {
 	c.onSync = fn
 }
 
+// SetOnSyncEvent sets a callback run at every End of Data with the sync's
+// telemetry record (the one recorded with SetTelemetry, set or not): its
+// serial, counts and data_fingerprint. It runs on the client's goroutine,
+// before the SetOnSync callback, and must not block.
+func (c *Client) SetOnSyncEvent(fn func(telemetry.SessionEvent)) {
+	c.onSyncEvent = fn
+}
+
+// DataFingerprint returns the fingerprint of the VRPs and ASPA records this
+// client's cache holds now (see store.Fingerprint): equal for equal sets,
+// whatever order or session they came in.
+func (c *Client) DataFingerprint() store.Fingerprint {
+	var fp store.Fingerprint
+	if c.vrpStore != nil {
+		fp = fp.Add(c.vrpStore.OwnerFingerprint(c.owner))
+	}
+	if c.aspaStore != nil {
+		fp = fp.Add(c.aspaStore.OwnerFingerprint(c.owner))
+	}
+	return fp
+}
+
 // SetOnDisconnect sets a callback invoked each time a session that
 // connected ends, with the reason (the same as the disconnected telemetry
 // event's disconnect_reason). It runs on the goroutine running Start and
@@ -363,6 +386,13 @@ func (c *Client) SetOnDisconnect(fn func(telemetry.DisconnectReason)) {
 // update and sync callbacks, the serial of the sync that called them. Safe
 // from any goroutine.
 func (c *Client) Serial() uint32 { return c.lastSerial.Load() }
+
+// SetReconnectBackoff sets the least and the most the client waits before
+// reconnecting after a session ends (5 s and 60 s by default), doubling in
+// between. Tests use it to reconnect at once.
+func (c *Client) SetReconnectBackoff(least, most time.Duration) {
+	c.retryMin, c.retryMax = least, max(least, most)
+}
 
 // SetVersionPinned, with pinned true, holds every session at the configured
 // version: a cache that rejects it (Error Report code 4), drops the
@@ -1083,11 +1113,19 @@ func (c *Client) endOfData(sessionID uint16, eod endOfData) (faults map[uint16]i
 		SyncDuration:  now.Sub(c.syncStart),
 		SyncType:      syncType,
 		ProtoVersion:  c.protoVersion,
+		// The set as of this End of Data, whatever the sync's type:
+		// staleness and regression detection compare sets, not serials.
+		DataFingerprint: c.DataFingerprint().String(),
 	}
 	if !c.lastSyncTime.IsZero() {
 		ev.IntervalSince = now.Sub(c.lastSyncTime)
 	}
 	c.tel.Record(ev)
+	if c.onSyncEvent != nil {
+		ev.Timestamp = ev.Timestamp.UTC()
+		ev.SchemaVersion = telemetry.NDJSONSchemaVersion
+		c.onSyncEvent(ev)
+	}
 	c.lastSyncTime = now
 	c.fullSyncPending = false
 

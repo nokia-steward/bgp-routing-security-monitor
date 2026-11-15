@@ -7,6 +7,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 )
 
 // SeedWindowFill reports one window's fill level after seeding.
@@ -24,6 +25,17 @@ type SeedSummary struct {
 	SyncCount      int // total sync records seen (includes full syncs)
 	FullSyncSkip   int // full syncs excluded from the windows (subset of SyncCount)
 	Fills          []SeedWindowFill
+	// DataGaps is, per cache, the gaps between data changes learned (see
+	// DataTracker) and the staleness threshold they give, by cache name.
+	DataGaps []SeedDataGaps
+}
+
+// SeedDataGaps reports one cache's learned gaps between data changes.
+type SeedDataGaps struct {
+	Cache     string
+	Gaps      int
+	Threshold time.Duration
+	Source    ThresholdSource
 }
 
 // SeedBaseline replays recorded NDJSON telemetry from r into a fresh Detector
@@ -61,6 +73,11 @@ func SeedBaseline(r io.Reader) (*Detector, *SeedSummary, error) {
 			continue
 		}
 		summary.SyncCount++
+		normalizeLegacySync(&ev, []byte(line))
+
+		// Every sync, full ones too, shows whether the data changed: the
+		// gaps between changes teach the staleness threshold.
+		detector.data.Observe(ev)
 
 		// Full syncs report near the entire table as "announced"; they are not
 		// comparable to incremental deltas, so they never feed the windows.
@@ -70,14 +87,6 @@ func SeedBaseline(r io.Reader) (*Detector, *SeedSummary, error) {
 			continue
 		}
 
-		// Absent JSON fields unmarshal to zero, matching the live path's
-		// "default optional metrics to 0" convention. A record from a RAVEN
-		// before the net counts has none of them: its PDU counts stand in,
-		// which is what such a RAVEN's detector observed.
-		if !hasNetCounts([]byte(line)) {
-			ev.VRPAdded, ev.VRPRemoved = ev.VRPAnnounced, ev.VRPWithdrawn
-			ev.ASPAAdded, ev.ASPARemoved = ev.ASPAAnnounced, ev.ASPAWithdrawn
-		}
 		detector.ObserveSyncTotals(ev.Cache, ev.Timestamp, SyncMetrics(ev), TotalsOf(ev))
 	}
 	if err := scanner.Err(); err != nil {
@@ -85,7 +94,25 @@ func SeedBaseline(r io.Reader) (*Detector, *SeedSummary, error) {
 	}
 
 	summary.Fills = detector.windowFills()
+	for _, cache := range detector.data.Caches() {
+		thr, src, n := detector.data.Threshold(cache)
+		summary.DataGaps = append(summary.DataGaps, SeedDataGaps{Cache: cache, Gaps: n, Threshold: thr, Source: src})
+	}
 	return detector, summary, nil
+}
+
+// normalizeLegacySync fills in the net counts of an incremental sync record
+// from a RAVEN before them (line is the record as read): its PDU counts
+// stand in, which is what such a RAVEN's detector observed. Absent JSON
+// fields unmarshal to zero, matching the live path's "default optional
+// metrics to 0" convention. A full sync's PDU counts are its whole data set,
+// not a change: its net counts stay 0, and DataTracker compares its totals.
+func normalizeLegacySync(ev *SessionEvent, line []byte) {
+	if ev.SyncType == SyncTypeFull || hasNetCounts(line) {
+		return
+	}
+	ev.VRPAdded, ev.VRPRemoved = ev.VRPAnnounced, ev.VRPWithdrawn
+	ev.ASPAAdded, ev.ASPARemoved = ev.ASPAAnnounced, ev.ASPAWithdrawn
 }
 
 // windowFills returns the fill level of every window, ordered by cache name and

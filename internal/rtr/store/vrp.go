@@ -53,9 +53,12 @@ type VRPStore struct {
 	// extra holds the announcements beyond the first of an owner that
 	// announced a VRP more than once: its count less 1. Almost always
 	// empty.
-	extra     map[ownedVRP]uint32
-	next      uint64            // order of the next VRP added
-	owned     [MaxOwners]uint64 // distinct VRPs each owner holds
+	extra map[ownedVRP]uint32
+	next  uint64            // order of the next VRP added
+	owned [MaxOwners]uint64 // distinct VRPs each owner holds
+	// fp is the fingerprint of the distinct VRPs each owner holds (see
+	// Fingerprint), kept with owned.
+	fp        [MaxOwners]Fingerprint
 	nextOwner int
 
 	serial    uint32
@@ -116,6 +119,15 @@ func (s *VRPStore) OwnerCount(o Owner) uint64 {
 	return s.owned[o]
 }
 
+// OwnerFingerprint returns the fingerprint of the distinct VRPs o holds,
+// including changes not yet published: equal for equal sets, whatever order
+// they were built in.
+func (s *VRPStore) OwnerFingerprint(o Owner) Fingerprint {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.fp[o]
+}
+
 // Serial returns the current RTR serial number.
 func (s *VRPStore) Serial() uint32 {
 	s.mu.RLock()
@@ -150,6 +162,7 @@ func (s *VRPStore) Clear() {
 	s.vrps = make(map[types.VRP]vrpEntry)
 	s.extra = make(map[ownedVRP]uint32)
 	s.owned = [MaxOwners]uint64{}
+	s.fp = [MaxOwners]Fingerprint{}
 	s.serial = 0
 	s.sessionID = 0
 }
@@ -183,6 +196,8 @@ func (s *VRPStore) clearOwnerLocked(o Owner) {
 	}
 	s.owned[o] = 0
 	s.owned[Unowned] = 0
+	s.fp[o] = Fingerprint{}
+	s.fp[Unowned] = Fingerprint{}
 }
 
 // ReplaceOwner makes stage o's VRPs, in place of the ones o held and the
@@ -233,6 +248,7 @@ func (s *VRPStore) ReplaceAll(vrps []types.VRP, serial uint32, sessionID uint16)
 	s.vrps = make(map[types.VRP]vrpEntry, len(vrps))
 	s.extra = make(map[ownedVRP]uint32)
 	s.owned = [MaxOwners]uint64{}
+	s.fp = [MaxOwners]Fingerprint{}
 	distinct := make([]types.VRP, 0, len(vrps))
 	order := make([]uint64, 0, len(vrps))
 	for _, v := range vrps {
@@ -282,6 +298,7 @@ func (s *VRPStore) addLocked(o Owner, vrp types.VRP) (order uint64, added bool) 
 	e.owners |= bit
 	s.vrps[vrp] = e
 	s.owned[o]++
+	s.fp[o] = s.fp[o].Add(VRPHash(vrp))
 	return e.order, true
 }
 
@@ -332,6 +349,7 @@ func (s *VRPStore) releaseLocked(o Owner, vrp types.VRP) {
 		s.vrps[vrp] = e
 	}
 	s.owned[o]--
+	s.fp[o] = s.fp[o].Sub(VRPHash(vrp))
 }
 
 // FindCovering returns all VRPs that cover the given prefix.
