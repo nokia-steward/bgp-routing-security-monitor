@@ -28,6 +28,7 @@ type ASPAStore struct {
 	records map[uint32]*ASPARecord        // customer ASN -> union record
 	owners  map[uint32]map[Owner][]uint32 // customer ASN -> owner -> providers, sorted
 	owned   map[Owner]int                 // customer ASNs each owner has a record for
+	fp      map[Owner]Fingerprint         // fingerprint of each owner's records (see Fingerprint)
 }
 
 // NewASPAStore creates an empty ASPA store.
@@ -36,6 +37,7 @@ func NewASPAStore() *ASPAStore {
 		records: make(map[uint32]*ASPARecord),
 		owners:  make(map[uint32]map[Owner][]uint32),
 		owned:   make(map[Owner]int),
+		fp:      make(map[Owner]Fingerprint),
 	}
 }
 
@@ -104,7 +106,13 @@ func (s *ASPAStore) Withdraw(o Owner, customerASN uint32) (changed, known bool) 
 // o's record) and recomputes the union record. The caller holds mu.
 func (s *ASPAStore) setLocked(o Owner, customerASN uint32, providers []uint32) {
 	byOwner := s.owners[customerASN]
-	_, had := byOwner[o]
+	old, had := byOwner[o]
+	if had {
+		s.fp[o] = s.fp[o].Sub(ASPAHash(customerASN, old))
+	}
+	if len(providers) > 0 {
+		s.fp[o] = s.fp[o].Add(ASPAHash(customerASN, providers))
+	}
 	if len(providers) == 0 {
 		if had {
 			delete(byOwner, o)
@@ -204,6 +212,14 @@ func (s *ASPAStore) OwnerCount(o Owner) int {
 	return s.owned[o]
 }
 
+// OwnerFingerprint returns the fingerprint of o's records: equal for equal
+// sets, whatever order they were built in.
+func (s *ASPAStore) OwnerFingerprint(o Owner) Fingerprint {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.fp[o]
+}
+
 // Clear drops all ASPA records, every owner's.
 func (s *ASPAStore) Clear() {
 	s.mu.Lock()
@@ -211,6 +227,7 @@ func (s *ASPAStore) Clear() {
 	s.records = make(map[uint32]*ASPARecord)
 	s.owners = make(map[uint32]map[Owner][]uint32)
 	s.owned = make(map[Owner]int)
+	s.fp = make(map[Owner]Fingerprint)
 }
 
 // ClearOwner drops o's records and the Unowned ones (a restored snapshot):
@@ -261,6 +278,7 @@ func (s *ASPAStore) Restore(aspas []types.ASPARecord) {
 	s.records = make(map[uint32]*ASPARecord, len(aspas))
 	s.owners = make(map[uint32]map[Owner][]uint32, len(aspas))
 	s.owned = make(map[Owner]int)
+	s.fp = make(map[Owner]Fingerprint)
 	for _, a := range aspas {
 		ps := slices.Clone(a.ProviderASNs)
 		slices.Sort(ps)

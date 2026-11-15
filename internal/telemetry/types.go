@@ -122,6 +122,11 @@ type SessionEvent struct {
 	SyncDuration  time.Duration `json:"sync_duration_ns,omitempty"`
 	IntervalSince time.Duration `json:"interval_since_ns,omitempty"`
 	SyncType      SyncType      `json:"sync_type,omitempty"`
+	// DataFingerprint identifies the cache's data set as of this sync, VRPs
+	// and ASPA records, whatever order or session they came in: 32 hex
+	// digits, equal for equal sets (store.Fingerprint). Absent from records
+	// of RAVENs before it.
+	DataFingerprint string `json:"data_fingerprint,omitempty"`
 
 	// SerialChanged is set on sync events: whether the serial differs from
 	// the previous sync's, i.e. whether the cache had anything new. A poll

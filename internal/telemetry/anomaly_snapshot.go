@@ -34,6 +34,10 @@ type anomalySnapshotFile struct {
 	SchemaVersion int                                  `json:"schema_version"`
 	SavedAt       time.Time                            `json:"saved_at"`
 	Caches        map[string]map[string]windowSnapshot `json:"caches"`
+	// DataGaps is each cache's history of gaps between data changes (see
+	// DataTracker), in ns. Absent from snapshots of RAVENs before it,
+	// which load with no history.
+	DataGaps map[string]windowSnapshot `json:"data_gaps,omitempty"`
 }
 
 // snapshot returns a copy of the window's raw ring buffer plus its position
@@ -86,6 +90,9 @@ func (d *Detector) Save(path string) error {
 		file.Caches[cache] = cacheSnap
 	}
 	d.mu.Unlock()
+	if gaps := d.data.gapSnapshots(); len(gaps) > 0 {
+		file.DataGaps = gaps
+	}
 
 	data, err := json.MarshalIndent(&file, "", "  ")
 	if err != nil {
@@ -128,6 +135,7 @@ func (d *Detector) Load(path string) error {
 			ErrAnomalySnapshotSchemaMismatch, file.SchemaVersion, anomalySnapshotSchemaVersion)
 	}
 
+	d.data.restoreGaps(file.DataGaps)
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for cache, metrics := range file.Caches {

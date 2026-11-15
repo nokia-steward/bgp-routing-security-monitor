@@ -286,6 +286,33 @@ func Gauge(name, cache string) float64 {
 	return -1
 }
 
+// GaugeLabels returns the value of the gauge name whose labels are exactly
+// labels, from the default registry, or -1 if there is no such series.
+func GaugeLabels(name string, labels map[string]string) float64 {
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		return -1
+	}
+	for _, mf := range families {
+		if mf.GetName() != name {
+			continue
+		}
+	metric:
+		for _, m := range mf.GetMetric() {
+			if len(m.GetLabel()) != len(labels) {
+				continue
+			}
+			for _, lp := range m.GetLabel() {
+				if labels[lp.GetName()] != lp.GetValue() {
+					continue metric
+				}
+			}
+			return m.GetGauge().GetValue()
+		}
+	}
+	return -1
+}
+
 // CounterSum returns the sum over every series of the counter
 // name{cache=cache,...} in the default registry (for example
 // raven_rtr_anomaly_total across severities), or 0 if there is none.

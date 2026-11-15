@@ -482,6 +482,16 @@ func (c *CrossCache) Settle() time.Duration {
 	return c.settleLocked(members)
 }
 
+// Compared returns the caches compared now (those in session) and the
+// settle window in effect for them: the group a DataTracker reports the
+// scope of stale data against (DataTracker.SetGroup).
+func (c *CrossCache) Compared() (caches []string, settle time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	members, all, _ := c.comparedLocked()
+	return c.names(all), c.settleLocked(members)
+}
+
 func (c *CrossCache) names(mask uint64) []string {
 	out := []string{}
 	for _, m := range c.members {

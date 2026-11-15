@@ -271,6 +271,19 @@ func (s *Server) AdvanceWire(wire []WirePDU, result []VRP) uint32 {
 	return s.serial
 }
 
+// SwitchNode makes the cache answer as another node behind the same
+// address would (an anycast RTR address): vrps and aspas at serial, with
+// no history, so a client's Serial Query for any other serial gets a Cache
+// Reset and its full sync returns this data. Clients see it when they next
+// query; close the session for a reconnect.
+func (s *Server) SwitchNode(vrps []VRP, aspas []ASPASet, serial uint32) {
+	s.mu.Lock()
+	s.serial = serial
+	s.history = map[uint32]step{}
+	s.mu.Unlock()
+	s.SetData(vrps, aspas)
+}
+
 // Serial is the cache's current serial.
 func (s *Server) Serial() uint32 {
 	s.mu.Lock()

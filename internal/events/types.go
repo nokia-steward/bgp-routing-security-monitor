@@ -32,7 +32,44 @@ const (
 	// rules in place of their per-route events. Bulk says what changed;
 	// Route is nil. Only notification actions run for it.
 	EventTypeRTRBulkChange EventType = "rtr_bulk_change"
+	// EventTypeRTRStale fires once when an RTR cache's data starts a stale
+	// episode: the cache syncs, but its data (VRPs and ASPAs) has not
+	// changed for longer than its staleness threshold. Data says how long;
+	// Route is nil. Only notification actions run for it.
+	EventTypeRTRStale EventType = "rtr_stale"
+	// EventTypeRTRDataRegressed fires when an RTR cache returns to a data
+	// set it served earlier (an anycast reconnect to a lagging node, say).
+	// Data says which; Route is nil. Only notification actions run for it.
+	EventTypeRTRDataRegressed EventType = "rtr_data_regressed"
 )
+
+// notificationOnly reports whether events of type t reach notification
+// actions only (webhook, log), never FlowSpec: they are about an RTR cache
+// or many routes, not one route.
+func notificationOnly(t EventType) bool {
+	return t == EventTypeRTRBulkChange || t == EventTypeRTRStale || t == EventTypeRTRDataRegressed
+}
+
+// DataChange is what an rtr_stale or rtr_data_regressed event reports about
+// the cache's data (see telemetry.DataTracker).
+type DataChange struct {
+	// rtr_stale: when the current data became current, how long ago, the
+	// threshold it outlasted and where that came from, and the syncs that
+	// saw no change.
+	LastChange         time.Time
+	Gap                time.Duration
+	Threshold          time.Duration
+	ThresholdSource    string
+	SyncsWithoutChange int
+	// CacheState is connected (serving frozen data) or disconnected
+	// (unreachable while its last data ages), as the episode began.
+	CacheState string
+	// rtr_data_regressed: the serials before and after, and when the set
+	// returned to was first and last current, and how long ago that was.
+	SerialBefore, SerialAfter uint32
+	FirstCurrent, LastCurrent time.Time
+	Ago                       time.Duration
+}
 
 // Source says what produced an event's route state change.
 const (
@@ -95,6 +132,9 @@ type Event struct {
 	// Bulk is set on EventTypeRTRBulkChange events only. CacheName then
 	// names the cache, or the caches comma-separated, whose update it was.
 	Bulk *BulkChange
+	// Data is set on EventTypeRTRStale and EventTypeRTRDataRegressed events
+	// only. CacheName names the cache; Serial is its serial.
+	Data *DataChange
 	// GlobalVisibility is attached by the global-correlate action when a
 	// matching rule includes one. Nil when no correlation ran, which is the
 	// case for every rule that does not opt in.

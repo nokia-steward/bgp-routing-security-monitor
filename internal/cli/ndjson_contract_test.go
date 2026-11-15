@@ -218,6 +218,32 @@ var contractScenarios = map[string]func(t *testing.T) string{
 		r.stop()
 		return r.ndjson.String()
 	},
+	// stale and its structural anomaly (data_stale), data_regressed and its
+	// anomaly, stale_resolved: --stale-threshold 300ms, real time.
+	"stale data": func(t *testing.T) string {
+		srv := rtrtest.NewServer(t, monitorCache(2))
+		srv.SetData(rtrtest.GenVRPs(0, 5, 65001), []rtrtest.ASPASet{{Customer: 64500, Providers: []uint32{64501}}})
+		d := telemetry.NewDetector(telemetry.DefaultAnomalyConfig())
+		d.Data().SetThreshold(300 * time.Millisecond)
+		m := runMonitorWith(t, srv, "auto", nil, d)
+		m.waitRecords(t, "sync", 1)
+		extra := rtrtest.GenVRPs(100, 2, 65002)
+		step := func(delta rtrtest.Delta, syncs int) {
+			srv.Advance(delta)
+			srv.Notify()
+			m.waitRecords(t, "sync", syncs)
+		}
+		step(rtrtest.Delta{AnnounceVRPs: extra}, 2)
+		time.Sleep(400 * time.Millisecond)
+		step(rtrtest.Delta{}, 3)
+		m.waitRecords(t, "stale", 1)
+		step(rtrtest.Delta{WithdrawVRPs: extra}, 4) // back to the first set
+		m.waitRecords(t, "data_regressed", 1)
+		step(rtrtest.Delta{AnnounceASPAs: []rtrtest.ASPASet{{Customer: 64510, Providers: []uint32{64511}}}}, 5)
+		m.waitRecords(t, "stale_resolved", 1)
+		m.stop()
+		return m.ndjson.String()
+	},
 	// disconnected (error): pinned to 2, the cache answers at 1.
 	"pinned, answered at another version": func(t *testing.T) string {
 		cfg := monitorCache(1)

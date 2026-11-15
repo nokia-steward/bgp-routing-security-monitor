@@ -152,6 +152,21 @@ func (w *metricWindow) medianMAD() (median, mad float64, ok bool) {
 	return median, mad, true
 }
 
+// sorted returns the window's values, sorted.
+func (w *metricWindow) sorted() []float64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n := w.countLocked()
+	vals := make([]float64, n)
+	if w.filled {
+		copy(vals, w.values)
+	} else {
+		copy(vals, w.values[:w.pos])
+	}
+	sort.Float64s(vals)
+	return vals
+}
+
 // medianOfSorted returns the median of an already-sorted, non-empty slice.
 func medianOfSorted(sorted []float64) float64 {
 	n := len(sorted)
@@ -282,6 +297,9 @@ type Detector struct {
 	cfg     AnomalyConfig
 	mu      sync.Mutex
 	windows map[string]map[string]*metricWindow // cache -> metric -> window
+	// data tracks staleness and returns to earlier data; its gap history
+	// is saved and loaded with the windows.
+	data *DataTracker
 }
 
 // NewDetector returns a detector configured with cfg.
@@ -289,8 +307,12 @@ func NewDetector(cfg AnomalyConfig) *Detector {
 	return &Detector{
 		cfg:     cfg,
 		windows: make(map[string]map[string]*metricWindow),
+		data:    NewDataTracker(),
 	}
 }
+
+// Data returns the detector's staleness and data regression tracker.
+func (d *Detector) Data() *DataTracker { return d.data }
 
 // ObserveStructural records a structural event (cache_reset / error_report).
 // These bypass the statistical model entirely — the baseline had zero of

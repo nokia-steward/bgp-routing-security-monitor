@@ -75,18 +75,104 @@ func newMonitorClientStores(cache, transport, rtrVersion string, vrps *store.VRP
 // is told of every sync and the anomaly it raised.
 func consumeRTREvents(rec *telemetry.Recorder, detector *telemetry.Detector, cmp *telemetry.CrossCache, observed func(), log *slog.Logger) {
 	for ev := range rec.Events() {
-		anomaly, ok := observeRTREvent(detector, ev, log)
-		if ok && observed != nil {
+		if handleRTREvent(rec, detector, cmp, ev, log) && observed != nil {
 			observed()
 		}
-		if anomaly != nil {
-			rec.RecordAnomaly(anomaly)
-			metrics.RTRAnomalyTotal.WithLabelValues(anomaly.Cache, anomaly.Severity).Inc()
-			metrics.RTRAnomalyLastTimestamp.WithLabelValues(anomaly.Cache).Set(float64(anomaly.Timestamp.Unix()))
+	}
+}
+
+// handleRTREvent is consumeRTREvents for one event: the detector's anomaly,
+// the comparison, and the data tracker's stale, stale_resolved and
+// data_regressed records with their structural anomalies. It reports
+// whether the event was a sync the detector's baseline took in.
+func handleRTREvent(rec *telemetry.Recorder, detector *telemetry.Detector, cmp *telemetry.CrossCache,
+	ev telemetry.SessionEvent, log *slog.Logger) bool {
+	anomaly, ok := observeRTREvent(detector, ev, log)
+	if anomaly != nil {
+		recordAnomaly(rec, anomaly)
+	}
+	if ev.EventType == telemetry.EventConnected || ev.EventType == telemetry.EventDisconnected {
+		detector.Data().Observe(ev) // the cache's connection state
+	}
+	if ev.EventType != telemetry.EventSync {
+		return ok
+	}
+	if cmp != nil {
+		cmp.ObserveSync(ev, anomaly)
+	}
+	recordDataEvents(rec, detector.Data(), detector.Data().Observe(ev), ev.Timestamp, log)
+	return ok
+}
+
+// dataTickEvery is how often rtr monitor evaluates each cache's data age
+// between syncs (DataTracker.Tick), as raven serve does.
+const dataTickEvery = 15 * time.Second
+
+// tickData evaluates every cache's data age at now: a cache goes stale when
+// its data outlasts its threshold, not at its next sync, and one that stops
+// syncing goes stale too.
+func tickData(rec *telemetry.Recorder, t *telemetry.DataTracker, now time.Time, log *slog.Logger) {
+	recordDataEvents(rec, t, t.Tick(now), now, log)
+}
+
+// runDataTicks calls tickData every dataTickEvery until ctx is done.
+func runDataTicks(ctx context.Context, rec *telemetry.Recorder, t *telemetry.DataTracker, log *slog.Logger) {
+	tick := time.NewTicker(dataTickEvery)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-tick.C:
+			tickData(rec, t, now, log)
 		}
-		if cmp != nil && ev.EventType == telemetry.EventSync {
-			cmp.ObserveSync(ev, anomaly)
+	}
+}
+
+// recordDataEvents writes the data tracker's records with their structural
+// anomalies, logs and counts them, and sets every cache's data gauges as of
+// now.
+func recordDataEvents(rec *telemetry.Recorder, t *telemetry.DataTracker, des []telemetry.DataEvent, now time.Time, log *slog.Logger) {
+	for _, de := range des {
+		rec.RecordData(de)
+		logDataEvent(log, de)
+		if de.Kind == telemetry.DataRegressed {
+			metrics.RTRDataRegressions.WithLabelValues(de.Cache).Inc()
 		}
+		if a := de.Anomaly(); a != nil {
+			recordAnomaly(rec, a)
+		}
+	}
+	for _, cache := range t.Caches() {
+		if st, ok := t.Status(cache, now); ok {
+			metrics.SetRTRData(cache, st.Age, st.CacheState)
+		}
+	}
+}
+
+// recordAnomaly writes an anomaly record and counts it in Prometheus.
+func recordAnomaly(rec *telemetry.Recorder, a *telemetry.AnomalyEvent) {
+	rec.RecordAnomaly(a)
+	metrics.RTRAnomalyTotal.WithLabelValues(a.Cache, a.Severity).Inc()
+	metrics.RTRAnomalyLastTimestamp.WithLabelValues(a.Cache).Set(float64(a.Timestamp.Unix()))
+}
+
+// logDataEvent logs a stale episode starting or ending, or a return to
+// earlier data.
+func logDataEvent(log *slog.Logger, de telemetry.DataEvent) {
+	switch de.Kind {
+	case telemetry.DataStale:
+		log.Warn("RTR cache data stale: syncing, but its data has not changed for longer than its threshold",
+			"cache", de.Cache, "serial", de.Serial, "last_change", de.LastChange, "gap", de.Gap,
+			"threshold", de.ExpectedGap, "threshold_source", de.ThresholdSource, "syncs_without_change", de.SyncsWithoutChange,
+			"scope", de.Scope, "cache_state", de.CacheState)
+	case telemetry.DataStaleResolved:
+		log.Info("RTR cache data changing again", "cache", de.Cache, "resolution", de.Resolution, "stale_for", de.Duration, "unchanged_for", de.Gap,
+			"serial_before", de.SerialBefore, "serial_after", de.SerialAfter)
+	case telemetry.DataRegressed:
+		log.Warn("RTR cache returned to earlier data", "cache", de.Cache, "last_current", de.LastCurrent, "ago", de.Ago,
+			"first_current", de.FirstCurrent, "serial_before", de.SerialBefore, "serial_after", de.SerialAfter,
+			"sync_type", de.SyncType)
 	}
 }
 
@@ -188,6 +274,7 @@ func newRTRMonitorCmd() *cobra.Command {
 		prometheus      string
 		anomalySnapshot string
 		rtrVersion      string
+		staleThreshold  time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -197,6 +284,10 @@ func newRTRMonitorCmd() *cobra.Command {
 records session lifecycle and sync events as NDJSON, and (optionally) exposes
 Prometheus metrics. It keeps an in-memory VRP/ASPA set per cache; no
 validation or BMP ingestion happens here.
+
+It reports a cache whose data (not serial) stops changing for longer than its
+learned threshold (stale, once per episode, and stale_resolved), and one that
+returns to data it served earlier (data_regressed).
 
 With several caches it also compares their data after every sync, and reports
 a cache that persistently disagrees with the others (divergence) and a large
@@ -209,6 +300,9 @@ change that reached every cache at once (upstream_change).`,
 			}
 			if _, _, err := parseMonitorRTRVersion(rtrVersion); err != nil {
 				return err
+			}
+			if staleThreshold < 0 {
+				return fmt.Errorf("invalid --stale-threshold %s: must not be negative", staleThreshold)
 			}
 			if compareSettle < 0 {
 				return fmt.Errorf("invalid --compare-settle %s: must not be negative", compareSettle)
@@ -247,6 +341,7 @@ change that reached every cache at once (upstream_change).`,
 			for _, cache := range caches {
 				initAnomalyMetrics(cache)
 			}
+			configureDataTracker(detector.Data(), staleThreshold, set.cmp)
 
 			// Consume the telemetry event channel: feed sync/structural events to
 			// the detector, emit any resulting anomaly as an NDJSON record on the
@@ -278,6 +373,14 @@ change that reached every cache at once (upstream_change).`,
 
 			done := set.start(ctx)
 
+			// Data age between syncs. Stopped, like the clients, before the
+			// recorder closes and the log file with it.
+			ticksDone := make(chan struct{})
+			go func() {
+				defer close(ticksDone)
+				runDataTicks(ctx, rec, detector.Data(), log)
+			}()
+
 			if len(caches) == 1 {
 				log.Info("RTR monitor started", "cache", caches[0], "transport", transport, "rtr_version", rtrVersion, "log_file", logFile)
 			} else {
@@ -300,6 +403,7 @@ change that reached every cache at once (upstream_change).`,
 				log.Warn("RTR client did not stop within grace period", "grace", rtrMonitorShutdownGrace)
 			}
 
+			<-ticksDone
 			rec.Close()
 
 			// The consumer goroutine drains any buffered events and exits once
@@ -327,6 +431,8 @@ change that reached every cache at once (upstream_change).`,
 	cmd.Flags().StringVar(&prometheus, "prometheus", "", "Prometheus listen address (e.g. :9595); empty disables metrics")
 	cmd.Flags().StringVar(&rtrVersion, "rtr-version", "auto",
 		"RTR protocol version: auto negotiates from 2 down to what the cache supports; 0, 1 or 2 pins the session to that version, with no fallback")
+	cmd.Flags().DurationVar(&staleThreshold, "stale-threshold", 0,
+		"how long a cache's data may go without changing before it is reported stale (0: learned per cache, max(4 x median gap, 3 x p90 gap, 30m) between data changes; 4h until 20 gaps are known)")
 	cmd.Flags().StringVar(&anomalySnapshot, "anomaly-snapshot", "~/.raven/anomaly-baseline.json", "path to the adaptive anomaly-detector baseline snapshot (JSON)")
 
 	return cmd
@@ -341,6 +447,16 @@ change that reached every cache at once (upstream_change).`,
 func initAnomalyMetrics(cache string) {
 	for _, sev := range telemetry.AnomalySeverities {
 		metrics.RTRAnomalyTotal.WithLabelValues(cache, sev)
+	}
+	metrics.RTRDataRegressions.WithLabelValues(cache)
+}
+
+// configureDataTracker applies --stale-threshold (0 learns) and, with several
+// caches compared, reports the scope of stale data against them.
+func configureDataTracker(t *telemetry.DataTracker, threshold time.Duration, cmp *telemetry.CrossCache) {
+	t.SetThreshold(threshold)
+	if cmp != nil {
+		t.SetGroup(cmp.Compared)
 	}
 }
 

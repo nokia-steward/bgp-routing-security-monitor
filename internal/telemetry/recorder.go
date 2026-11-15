@@ -167,3 +167,88 @@ func (r *Recorder) Close() {
 	}
 	close(r.events)
 }
+
+// staleRecord, staleResolvedRecord and dataRegressedRecord are the NDJSON
+// forms of a DataEvent (see DataTracker).
+type staleRecord struct {
+	Timestamp          time.Time     `json:"timestamp"`
+	Cache              string        `json:"cache"`
+	EventType          string        `json:"event_type"`
+	SchemaVersion      int           `json:"schema_version"`
+	Serial             uint32        `json:"serial"`
+	LastChange         time.Time     `json:"last_change"`
+	GapNS              time.Duration `json:"gap_ns"`
+	ExpectedGapNS      time.Duration `json:"expected_gap_ns"`
+	SyncsWithoutChange int           `json:"syncs_without_change"`
+	ThresholdSource    string        `json:"threshold_source"`
+	GapsLearned        int           `json:"gaps_learned"`
+	Scope              string        `json:"scope,omitempty"`
+	CacheState         string        `json:"cache_state"`
+}
+
+type staleResolvedRecord struct {
+	Timestamp     time.Time     `json:"timestamp"`
+	Cache         string        `json:"cache"`
+	EventType     string        `json:"event_type"`
+	SchemaVersion int           `json:"schema_version"`
+	StaleSince    time.Time     `json:"stale_since"`
+	DurationNS    time.Duration `json:"duration_ns"`
+	LastChange    time.Time     `json:"last_change"`
+	GapNS         time.Duration `json:"gap_ns"`
+	SerialBefore  uint32        `json:"serial_before"`
+	SerialAfter   uint32        `json:"serial_after"`
+	SyncType      SyncType      `json:"sync_type"`
+	Resolution    string        `json:"resolution"`
+	VRPAdded      int           `json:"vrp_added"`
+	VRPRemoved    int           `json:"vrp_removed"`
+	ASPAAdded     int           `json:"aspa_added"`
+	ASPARemoved   int           `json:"aspa_removed"`
+}
+
+type dataRegressedRecord struct {
+	Timestamp       time.Time     `json:"timestamp"`
+	Cache           string        `json:"cache"`
+	EventType       string        `json:"event_type"`
+	SchemaVersion   int           `json:"schema_version"`
+	SerialBefore    uint32        `json:"serial_before"`
+	SerialAfter     uint32        `json:"serial_after"`
+	SyncType        SyncType      `json:"sync_type"`
+	DataFingerprint string        `json:"data_fingerprint"`
+	FirstCurrent    time.Time     `json:"first_current"`
+	LastCurrent     time.Time     `json:"last_current"`
+	AgoNS           time.Duration `json:"ago_ns"`
+}
+
+// dataRecord returns ev's NDJSON record.
+func dataRecord(ev DataEvent) any {
+	ts := ev.Timestamp.UTC()
+	switch ev.Kind {
+	case DataStale:
+		return staleRecord{
+			Timestamp: ts, Cache: ev.Cache, EventType: string(ev.Kind), SchemaVersion: NDJSONSchemaVersion,
+			Serial: ev.Serial, LastChange: ev.LastChange.UTC(), GapNS: ev.Gap, ExpectedGapNS: ev.ExpectedGap,
+			SyncsWithoutChange: ev.SyncsWithoutChange, ThresholdSource: string(ev.ThresholdSource),
+			GapsLearned: ev.GapsLearned, Scope: ev.Scope, CacheState: ev.CacheState,
+		}
+	case DataStaleResolved:
+		return staleResolvedRecord{
+			Timestamp: ts, Cache: ev.Cache, EventType: string(ev.Kind), SchemaVersion: NDJSONSchemaVersion,
+			StaleSince: ev.StaleSince.UTC(), DurationNS: ev.Duration, LastChange: ev.LastChange.UTC(), GapNS: ev.Gap,
+			SerialBefore: ev.SerialBefore, SerialAfter: ev.SerialAfter, SyncType: ev.SyncType, Resolution: ev.Resolution,
+			VRPAdded: ev.VRPAdded, VRPRemoved: ev.VRPRemoved, ASPAAdded: ev.ASPAAdded, ASPARemoved: ev.ASPARemoved,
+		}
+	default:
+		return dataRegressedRecord{
+			Timestamp: ts, Cache: ev.Cache, EventType: string(ev.Kind), SchemaVersion: NDJSONSchemaVersion,
+			SerialBefore: ev.SerialBefore, SerialAfter: ev.SerialAfter, SyncType: ev.SyncType,
+			DataFingerprint: ev.Fingerprint, FirstCurrent: ev.FirstCurrent.UTC(), LastCurrent: ev.LastCurrent.UTC(), AgoNS: ev.Ago,
+		}
+	}
+}
+
+// RecordData writes ev as its NDJSON record (stale, stale_resolved or
+// data_regressed), serialized with every other record. Like RecordAnomaly it
+// does not echo onto the event channel. Safe on a nil Recorder (no-op).
+func (r *Recorder) RecordData(ev DataEvent) {
+	r.write(dataRecord(ev), ev.Cache, string(ev.Kind))
+}

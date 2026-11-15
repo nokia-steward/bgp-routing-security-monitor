@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -79,6 +80,10 @@ func printSeedSummary(w io.Writer, s *telemetry.SeedSummary, outPath string) {
 			status = " (full)"
 		}
 		fmt.Fprintf(w, "  %s: %d/%d%s\n", fill.Metric, fill.Count, fill.Cap, status)
+	}
+	for _, g := range s.DataGaps {
+		fmt.Fprintf(w, "gaps between data changes for %s: %d/%d, stale threshold %s (%s)\n",
+			g.Cache, g.Gaps, telemetry.DataGapWindow, g.Threshold.Round(time.Second), g.Source)
 	}
 
 	fmt.Fprintf(w, "output: %s\n", outPath)

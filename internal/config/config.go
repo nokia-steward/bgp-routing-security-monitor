@@ -104,8 +104,8 @@ type RuleConfig struct {
 
 // TriggerConfig is the YAML representation of a trigger.
 // The Type field selects the trigger kind: posture, posture_change, prefix,
-// asn, protected_asn, cache_unhealthy, rib, source, rtr_bulk_change, or
-// compound.
+// asn, protected_asn, cache_unhealthy, rib, source, rtr_bulk_change,
+// rtr_stale, rtr_data_regressed, or compound.
 type TriggerConfig struct {
 	Type     string   `mapstructure:"type"`
 	Postures []string `mapstructure:"postures"`
@@ -256,6 +256,10 @@ type RTRConfig struct {
 	// downgrade (Error Report code 4) checks whether the cache now supports
 	// the configured version.
 	VersionReprobeInterval time.Duration `mapstructure:"version-reprobe-interval"`
+	// StaleThreshold is how long a cache's data may go without changing
+	// before it is reported stale; 0 learns it per cache (see
+	// telemetry.DataTracker).
+	StaleThreshold time.Duration `mapstructure:"stale-threshold"`
 }
 
 type RTRCacheConfig struct {

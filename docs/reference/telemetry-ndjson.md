@@ -83,7 +83,8 @@ Every record type except `anomaly` and the comparison records
 ## Record types
 
 The examples are records the monitor wrote in RAVEN's test harness; only the
-`cache` address was changed.
+`cache` address was changed. The `stale` example replays ASPA Explorer's
+records of a real anycast-node stall (see [Data Staleness](data-staleness.md)).
 
 ### `connected`
 
@@ -107,8 +108,8 @@ since the last serial), including a poll that finds nothing new.
 
 Every field but `interval_since_ns` is always present, 0 included. Files
 from older releases omit `serial`, the counts and `sync_duration_ns` when
-they are 0, and have no `vrp_added`, `vrp_removed`, `aspa_added` or
-`aspa_removed`.
+they are 0, and have no `vrp_added`, `vrp_removed`, `aspa_added`,
+`aspa_removed` or `data_fingerprint`.
 
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
@@ -127,11 +128,18 @@ they are 0, and have no `vrp_added`, `vrp_removed`, `aspa_added` or
 | `aspa_removed` | integer | always, 0 included | Customer ASes whose record this cache stopped holding in this sync |
 | `sync_duration_ns` | integer | always, 0 included | Nanoseconds from sending the query to receiving End of Data |
 | `interval_since_ns` | integer | absent on the first sync of the process | Nanoseconds since the previous sync's End of Data in this process, across sessions |
+| `data_fingerprint` | string | always (absent in files from older releases) | The cache's data set (VRPs and ASPA records) after the sync, as an order-independent fingerprint: 32 hex digits, equal for equal sets whatever order or session they came in. See [Data staleness](#data-staleness) |
 
 ```json
 {"timestamp":"2026-11-11T21:06:49.089760506Z","cache":"rtr.example.net:3323","event_type":"sync","schema_version":1,"sync_type":"full","serial_changed":true,"proto_version":1,"serial":0,"vrp_total":0,"vrp_announced":0,"vrp_withdrawn":0,"vrp_added":0,"vrp_removed":0,"aspa_total":0,"aspa_announced":0,"aspa_withdrawn":0,"aspa_added":0,"aspa_removed":0,"sync_duration_ns":318784}
 {"timestamp":"2026-11-11T21:06:49.091708344Z","cache":"rtr.example.net:3323","event_type":"sync","schema_version":1,"sync_type":"full","serial_changed":true,"proto_version":2,"serial":0,"vrp_total":50,"vrp_announced":50,"vrp_withdrawn":0,"vrp_added":50,"vrp_removed":0,"aspa_total":2,"aspa_announced":2,"aspa_withdrawn":0,"aspa_added":2,"aspa_removed":0,"sync_duration_ns":1369810}
 {"timestamp":"2026-11-11T21:06:49.097425939Z","cache":"rtr.example.net:3323","event_type":"sync","schema_version":1,"interval_since_ns":5717680,"sync_type":"incremental","serial_changed":true,"proto_version":2,"serial":1,"vrp_total":1247,"vrp_announced":1200,"vrp_withdrawn":3,"vrp_added":1200,"vrp_removed":3,"aspa_total":2,"aspa_announced":1,"aspa_withdrawn":1,"aspa_added":1,"aspa_removed":1,"sync_duration_ns":1897959}
+```
+
+The same sync as this release writes it, with its fingerprint:
+
+```json
+{"timestamp":"2026-11-15T16:41:03.042032365Z","cache":"rtr.example.net:3323","event_type":"sync","schema_version":1,"interval_since_ns":8167024,"sync_type":"incremental","data_fingerprint":"4e6c3f8b19b49c0f83de6217a4aae760","serial_changed":true,"proto_version":2,"serial":1,"vrp_total":1247,"vrp_announced":1200,"vrp_withdrawn":3,"vrp_added":1200,"vrp_removed":3,"aspa_total":2,"aspa_announced":1,"aspa_withdrawn":1,"aspa_added":1,"aspa_removed":1,"sync_duration_ns":2835530}
 ```
 
 #### PDUs received and net change
@@ -290,15 +298,15 @@ neither.
 
 ### `anomaly`
 
-The anomaly detector flagged a record: a `reset` or `error` (structural), or
-an incremental `sync` whose metrics are far outside this cache's normal
-(statistical). Full syncs are never evaluated. It has the flagged record's
+The anomaly detector flagged a record: a `reset` or `error` (structural), a
+`stale` or `data_regressed` (structural), or an incremental `sync` whose
+metrics are far outside this cache's normal (statistical). Full syncs are never evaluated. It has the flagged record's
 `timestamp` and `cache`, and no `proto_version`.
 
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
 | `category` | string | always | `structural` or `statistical` |
-| `trigger` | string | always | structural: `cache_reset` (a `reset`), `error_report` (an `error` from the cache) or `protocol_error` (an `error` with `error_origin` `client`). statistical: the metric that crossed the hard threshold, or, for a correlated trip, the metrics that crossed the soft threshold joined with `+` in the order of [the statistics](#statistics), e.g. `interval_since_ns+sync_duration_ns` |
+| `trigger` | string | always | structural: `cache_reset` (a `reset`), `error_report` (an `error` from the cache), `protocol_error` (an `error` with `error_origin` `client`), `data_stale` (a `stale`) or `data_regressed` (a `data_regressed`). statistical: the metric that crossed the hard threshold, or, for a correlated trip, the metrics that crossed the soft threshold joined with `+` in the order of [the statistics](#statistics), e.g. `interval_since_ns+sync_duration_ns` |
 | `severity` | string | always | `high`: every structural anomaly, and a statistical one past the hard threshold. `medium`: a correlated trip (two or more metrics past the soft threshold) |
 | `z_scores` | object | statistical | For each metric at or above its soft threshold, its modified z-score (unitless; the scale is the window's MAD with a minimum spread, see the detector). Keys are [statistics](#statistics) |
 | `raw` | object | statistical | Every metric's value in the flagged sync: nanoseconds for `*_ns`, counts otherwise. Keys are [statistics](#statistics) |
@@ -306,6 +314,85 @@ an incremental `sync` whose metrics are far outside this cache's normal
 ```json
 {"timestamp":"2026-11-11T21:06:49.097425939Z","cache":"rtr.example.net:3323","event_type":"anomaly","schema_version":1,"category":"statistical","trigger":"vrp_announced","severity":"high","z_scores":{"vrp_announced":808.0509999999999},"raw":{"aspa_announced":1,"aspa_withdrawn":1,"interval_since_ns":5717680,"sync_duration_ns":1897959,"vrp_announced":1200,"vrp_withdrawn":3}}
 {"timestamp":"2026-11-11T21:06:49.10142665Z","cache":"rtr.example.net:3323","event_type":"anomaly","schema_version":1,"category":"structural","trigger":"cache_reset","severity":"high"}
+```
+
+## Data staleness
+
+The monitor watches whether each cache's data changes, not only how it
+syncs. It writes three record types for this, with one cache or several.
+[Data Staleness](data-staleness.md) explains how it works: the fingerprint,
+how the threshold is learned, and two real cases.
+
+The data changes when a sync's set (`data_fingerprint`) differs from the set
+before it. Serials play no part. The data is **stale** when the current set
+has been current longer than max(4 x median, 3 x 90th percentile of the
+cache's gaps between data changes, 30 minutes), or 4 hours until 20 gaps are
+known, or `--stale-threshold`. A **return to earlier data** is a sync whose
+set is one of the cache's last 50 (none current more than 7 days ago) that
+is not the current one, and that was current in all, or has been gone, for
+longer than the stale threshold; a briefer return is churn, a data change. It is not a data change: the staleness clock runs
+from when that set was first current.
+
+### `stale`
+
+A stale episode began: the cache's data has not changed for longer than its
+threshold, whether it goes on syncing or not. Checked at every sync and every
+15 seconds. There is one record per episode,
+never one per sync, and a structural `anomaly` (`data_stale`) comes with it.
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `serial` | integer | always | The serial at detection, for information |
+| `last_change` | string | always | When the current set became current. For a return to earlier data, when that set was first current |
+| `gap_ns` | integer | always | Nanoseconds from `last_change` to this record |
+| `expected_gap_ns` | integer | always | The threshold `gap_ns` exceeded |
+| `syncs_without_change` | integer | always | Syncs since the last data change that saw none |
+| `threshold_source` | string | always | `learned`, `default` (fewer than 20 gaps known) or `configured` (`--stale-threshold`) |
+| `gaps_learned` | integer | always | Gaps between data changes the threshold had to learn from, at most 500 |
+| `cache_state` | string | always | `connected`: the cache answers, serving frozen data. `disconnected`: no session; the cache cannot be reached while its last data ages. As of when the episode began. A disconnected cache that reconnects with the same data stays in the episode |
+| `scope` | string | several `--cache` only | `upstream`: every compared cache went stale within the settle window. `local`: not every cache did. The record is held until this is known: at most the settle window, then the next sync of any cache |
+
+```json
+{"timestamp":"2026-11-12T05:50:37.241328231Z","cache":"rtr.rpki.cloudflare.com:8282","event_type":"stale","schema_version":1,"serial":3,"last_change":"2026-11-12T04:49:43.051994426Z","gap_ns":3654189333805,"expected_gap_ns":3646165513965,"syncs_without_change":1,"threshold_source":"learned","gaps_learned":232,"cache_state":"connected"}
+```
+
+### `stale_resolved`
+
+A stale episode ended: the cache's data changed. A return to earlier data
+does not end an episode.
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `stale_since` | string | always | When the `stale` record was written |
+| `duration_ns` | integer | always | Nanoseconds from `stale_since` to this record |
+| `last_change` | string | always | When the stale data became current |
+| `gap_ns` | integer | always | Nanoseconds from `last_change` to this record: how long the data went unchanged |
+| `serial_before`, `serial_after` | integer | always | The serial before the sync that changed the data, and that sync's |
+| `sync_type` | string | always | That sync's type |
+| `resolution` | string | always | `data_change`: the data changed within a session. `reconnect_new_data`: the first sync after a reconnect brought new data |
+| `vrp_added`, `vrp_removed`, `aspa_added`, `aspa_removed` | integer | always | That sync's net change, as on its `sync` record |
+
+```json
+{"timestamp":"2026-11-15T16:41:03.449710389Z","cache":"rtr.example.net:3323","event_type":"stale_resolved","schema_version":1,"stale_since":"2026-11-15T16:41:03.437503125Z","duration_ns":12207264,"last_change":"2026-11-15T16:41:03.030132968Z","gap_ns":419577421,"serial_before":3,"serial_after":4,"sync_type":"incremental","resolution":"data_change","vrp_added":0,"vrp_removed":0,"aspa_added":1,"aspa_removed":0}
+```
+
+### `data_regressed`
+
+The cache returned to a data set it served earlier, inside a session or
+after a reconnect (to a lagging anycast node, say). A structural `anomaly`
+(`data_regressed`) comes with it.
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `serial_before`, `serial_after` | integer | always | The serial before this sync, and this sync's |
+| `sync_type` | string | always | `incremental` inside a session, `full` after a reconnect or Cache Reset |
+| `data_fingerprint` | string | always | The earlier set's fingerprint. When replaying records from before `data_fingerprint`, a stand-in of serial and totals |
+| `first_current` | string | always | When that set was first current. The staleness clock runs from here |
+| `last_current` | string | always | When that set stopped being current |
+| `ago_ns` | integer | always | Nanoseconds from `last_current` to this record |
+
+```json
+{"timestamp":"2026-11-15T16:41:03.443352981Z","cache":"rtr.example.net:3323","event_type":"data_regressed","schema_version":1,"serial_before":2,"serial_after":3,"sync_type":"incremental","data_fingerprint":"8e7f67a7118e090cefc14204e7a6144c","first_current":"2026-11-15T16:41:03.030132968Z","last_current":"2026-11-15T16:41:03.032053563Z","ago_ns":411299418}
 ```
 
 ## Comparing caches
@@ -486,6 +573,13 @@ cache's `anomaly` record is written as well.
 
 `category`: `structural`, `statistical`. `severity`: `high`, `medium`.
 
+### `threshold_source`, `scope`, `cache_state` and `resolution`
+
+`threshold_source`: `learned`, `default`, `configured`. `scope`: `upstream`,
+`local`. `cache_state`: `connected`, `disconnected`. See [`stale`](#stale).
+`resolution`: `data_change`, `reconnect_new_data`. See
+[`stale_resolved`](#stale_resolved).
+
 ### Statistics
 
 The metrics the detector scores, as keys of `z_scores` and `raw` and in
@@ -526,4 +620,5 @@ removed or changed).
 The anomaly detector's baseline (`--anomaly-snapshot`) is a separate JSON
 file, not part of this contract; it is internal state and may change between
 releases. `raven rtr seed-baseline` reads this NDJSON: it uses `sync` records
-and ignores every other record type.
+and ignores every other record type. From every sync, full ones too, it also
+learns the gaps between data changes that the staleness threshold comes from.
