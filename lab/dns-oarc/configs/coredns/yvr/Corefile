@@ -1,8 +1,0 @@
-# dns-yvr: one instance of the 1.1.1.1 anycast service. The NSID ("yvr")
-# tells the probe which instance answered.
-demo.oarc:53 {
-    nsid yvr
-    file /etc/coredns/demo.oarc.zone
-    log
-    errors
-}

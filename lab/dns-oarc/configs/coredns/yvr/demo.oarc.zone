@@ -1,6 +1,0 @@
-$ORIGIN demo.oarc.
-$TTL 60
-@   IN SOA ns.demo.oarc. hostmaster.demo.oarc. 2026110801 3600 600 86400 60
-@   IN NS  ns.demo.oarc.
-ns  IN A   192.0.2.53
-@   IN A   192.0.2.47

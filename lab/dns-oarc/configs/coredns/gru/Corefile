@@ -1,8 +1,0 @@
-# dns-gru: one instance of the 1.1.1.1 anycast service. The NSID ("gru")
-# tells the probe which instance answered.
-demo.oarc:53 {
-    nsid gru
-    file /etc/coredns/demo.oarc.zone
-    log
-    errors
-}
