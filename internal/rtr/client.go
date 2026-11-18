@@ -1342,7 +1342,6 @@ func (c *Client) sendSerialQuery(conn net.Conn, sessionID uint16, serial uint32)
 // parseIPv4Prefix parses an IPv4 Prefix PDU payload.
 // Returns the VRP and whether this is a withdrawal (flags bit 0 = 0).
 func (c *Client) parseIPv4Prefix(data []byte) (types.VRP, bool, error) {
-	// IPv4 Prefix PDU payload (after header):
 	// flags(1) + prefixLen(1) + maxLen(1) + zero(1) + prefix(4) + ASN(4)
 	if len(data) < 12 {
 		return types.VRP{}, false, fmt.Errorf("IPv4 prefix PDU too short: %d", len(data))
@@ -1351,7 +1350,13 @@ func (c *Client) parseIPv4Prefix(data []byte) (types.VRP, bool, error) {
 	flags := data[0]
 	prefixLen := int(data[1])
 	maxLen := data[2]
-	// data[3] is zero/reserved
+
+	if prefixLen > 32 {
+		return types.VRP{}, false, fmt.Errorf("invalid prefix length %d: maximum is 32", prefixLen)
+	}
+	if int(maxLen) < prefixLen || maxLen > 32 {
+		return types.VRP{}, false, fmt.Errorf("invalid max length %d for prefix length %d", maxLen, prefixLen)
+	}
 
 	addr, ok := netip.AddrFromSlice(data[4:8])
 	if !ok {
@@ -1360,7 +1365,7 @@ func (c *Client) parseIPv4Prefix(data []byte) (types.VRP, bool, error) {
 	prefix := netip.PrefixFrom(addr, prefixLen)
 	asn := binary.BigEndian.Uint32(data[8:12])
 
-	withdraw := flags&0x01 == 0 // flags bit 0: 1=announce, 0=withdraw
+	withdraw := flags&0x01 == 0
 
 	return types.VRP{
 		Prefix:    prefix,
@@ -1368,10 +1373,8 @@ func (c *Client) parseIPv4Prefix(data []byte) (types.VRP, bool, error) {
 		MaxLength: maxLen,
 	}, withdraw, nil
 }
-
 // parseIPv6Prefix parses an IPv6 Prefix PDU payload.
 func (c *Client) parseIPv6Prefix(data []byte) (types.VRP, bool, error) {
-	// IPv6 Prefix PDU payload (after header):
 	// flags(1) + prefixLen(1) + maxLen(1) + zero(1) + prefix(16) + ASN(4)
 	if len(data) < 24 {
 		return types.VRP{}, false, fmt.Errorf("IPv6 prefix PDU too short: %d", len(data))
@@ -1380,6 +1383,13 @@ func (c *Client) parseIPv6Prefix(data []byte) (types.VRP, bool, error) {
 	flags := data[0]
 	prefixLen := int(data[1])
 	maxLen := data[2]
+
+	if prefixLen > 128 {
+		return types.VRP{}, false, fmt.Errorf("invalid prefix length %d: maximum is 128", prefixLen)
+	}
+	if int(maxLen) < prefixLen || maxLen > 128 {
+		return types.VRP{}, false, fmt.Errorf("invalid max length %d for prefix length %d", maxLen, prefixLen)
+	}
 
 	addr, ok := netip.AddrFromSlice(data[4:20])
 	if !ok {
