@@ -197,6 +197,9 @@ anomaly.
 An `error` with `error_origin` `client` is one RAVEN found in what the cache
 sent, not an Error Report from the cache:
 
+- code 0 (Corrupt Data): RAVEN could not parse a Prefix or ASPA PDU (a
+  prefix length above 32 or 128, a maxLength below the prefix length or
+  above 32 or 128, or an ASPA PDU of the wrong length);
 - code 7 (Duplicate Announcement Received): the cache announced a VRP it
   already held, without withdrawing it first;
 - code 6 (Withdrawal of Unknown Record): the cache withdrew a VRP, or an ASPA
@@ -206,7 +209,7 @@ RAVEN writes one such record per sync and code, with `error_count`, before
 the sync's `sync` record. The detector reports each as a structural anomaly
 with trigger `protocol_error`.
 
-**RAVEN deviates from RFC 8210 §12 here.** §12 makes codes 6 and 7 fatal: the
+**RAVEN deviates from RFC 8210 §12 here.** §12 makes codes 0, 6 and 7 fatal: the
 router drops the session (and, in draft-ietf-sidrops-8210bis, flushes the
 cache's data). A monitor must not flush its data because of a cache bug:
 every route it validates would turn NotFound until the cache recovered.
@@ -215,7 +218,8 @@ withdrawals, never below 0, and holds the VRP while the count is above 0.
 Fort 1.7.0 (NICMx/FORT-validator#204) announces VRPs the router holds and
 withdraws them in the same answer, meaning no change: with the count they
 stay, as the cache meant. A router that ignores the duplicate announcement
-and applies the withdrawal loses them. After a sync with either error RAVEN
+and applies the withdrawal loses them. A PDU RAVEN cannot parse (code 0) is skipped; the rest of the sync
+applies. After a sync with any of these errors RAVEN
 sends a Reset Query on the same session, at most once per 5 minutes per
 cache. The full sync that answers it replaces the cache's data at its End of
 Data, so validation never sees a gap. The session goes on: no
@@ -232,7 +236,7 @@ customer's whole record.
 
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
-| `error_code` | integer | always | The RFC 8210 §12 error code; with `error_origin`, `6` or `7` |
+| `error_code` | integer | always | The RFC 8210 §12 error code; with `error_origin`, `0`, `6` or `7` |
 | `error_text` | string | absent when the cache sent none | The cache's error text, or RAVEN's description of the error it found (not stable: do not parse it) |
 | `error_origin` | string | only when RAVEN found the error | `client` |
 | `error_count` | integer | with `error_origin` | How many PDUs of the sync had the error |

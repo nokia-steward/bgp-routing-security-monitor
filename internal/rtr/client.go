@@ -45,6 +45,13 @@ const rtrHeaderLen = 8
 // Error Report codes (RFC 8210 §12). In an Error Report the header's
 // session ID field carries the code.
 const (
+	// errCodeCorruptData (RFC 8210 §12, code 0) is fatal in the RFC: send
+	// an Error Report and drop the session. RAVEN instead counts a PDU it
+	// cannot parse as a client fault, skips it and resyncs (healResync), as
+	// for codes 6 and 7: dropping the session would leave all of this
+	// cache's other data to go stale. A cache that keeps serving the same
+	// PDU is resynced at most once per healEvery.
+	errCodeCorruptData           uint16 = 0
 	errCodeNoDataAvailable       uint16 = 2
 	errCodeUnsupportedProtoVer   uint16 = 4
 	errCodeWithdrawalUnknown     uint16 = 6
@@ -888,7 +895,7 @@ func (c *Client) runSession(ctx context.Context) (err error) {
 		case PDUIPv4Prefix:
 			vrp, withdraw, err := c.parseIPv4Prefix(payload)
 			if err != nil {
-				c.log.Error("bad IPv4 prefix PDU", "error", err)
+				c.fault(errCodeCorruptData, fmt.Sprintf("IPv4 Prefix PDU (%v)", err))
 				continue
 			}
 			c.applyVRP(vrp, withdraw)
@@ -896,7 +903,7 @@ func (c *Client) runSession(ctx context.Context) (err error) {
 		case PDUIPv6Prefix:
 			vrp, withdraw, err := c.parseIPv6Prefix(payload)
 			if err != nil {
-				c.log.Error("bad IPv6 prefix PDU", "error", err)
+				c.fault(errCodeCorruptData, fmt.Sprintf("IPv6 Prefix PDU (%v)", err))
 				continue
 			}
 			c.applyVRP(vrp, withdraw)
@@ -904,7 +911,7 @@ func (c *Client) runSession(ctx context.Context) (err error) {
 		case PDUASPA:
 			customerASN, providerASNs, withdraw, err := c.parseASPAPDU(sessionID, payload)
 			if err != nil {
-				c.log.Error("bad ASPA PDU", "error", err)
+				c.fault(errCodeCorruptData, fmt.Sprintf("ASPA PDU (%v)", err))
 				continue
 			}
 			// 8210bis §5.12: an announcement for a Customer ASN this cache
@@ -1570,6 +1577,7 @@ func (c *Client) fault(code uint16, what string) {
 
 // faultTexts describes each fault code, for error events.
 var faultTexts = map[uint16]string{
+	errCodeCorruptData:           "corrupt data: %d PDUs could not be parsed, first %s; skipped",
 	errCodeWithdrawalUnknown:     "withdrawal of unknown record: %d records withdrawn that this cache did not hold, first %s; ignored",
 	errCodeDuplicateAnnouncement: "duplicate announcement received: %d records announced again while this cache held them, first %s; counted",
 }
@@ -1578,7 +1586,7 @@ var faultTexts = map[uint16]string{
 // client, with the count), and returns the counts by code; nil if none.
 func (c *Client) reportFaults() map[uint16]int {
 	faults := c.faults
-	for _, code := range []uint16{errCodeWithdrawalUnknown, errCodeDuplicateAnnouncement} {
+	for _, code := range []uint16{errCodeCorruptData, errCodeWithdrawalUnknown, errCodeDuplicateAnnouncement} {
 		n := faults[code]
 		if n == 0 {
 			continue
@@ -1609,6 +1617,7 @@ func (c *Client) healResync(faults map[uint16]int) bool {
 	now := c.now()
 	if !c.lastHeal.IsZero() && now.Sub(c.lastHeal) < c.healEvery {
 		c.log.Info("RTR cache sent PDUs in error; not resyncing yet: at most one self-healing resync per interval",
+			"corrupt_pdus", faults[errCodeCorruptData],
 			"duplicate_announcements", faults[errCodeDuplicateAnnouncement],
 			"unknown_withdrawals", faults[errCodeWithdrawalUnknown],
 			"interval", c.healEvery, "next_allowed", c.lastHeal.Add(c.healEvery))
@@ -1617,6 +1626,7 @@ func (c *Client) healResync(faults map[uint16]int) bool {
 	c.lastHeal = now
 	c.fullSyncPending = true
 	c.log.Warn("RTR cache sent PDUs in error; resyncing with a Reset Query on the same session (its data stays in use until the resync's End of Data)",
+		"corrupt_pdus", faults[errCodeCorruptData],
 		"duplicate_announcements", faults[errCodeDuplicateAnnouncement],
 		"unknown_withdrawals", faults[errCodeWithdrawalUnknown])
 	return true

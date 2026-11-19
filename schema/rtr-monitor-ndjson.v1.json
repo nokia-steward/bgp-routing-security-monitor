@@ -388,7 +388,7 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 65535,
-          "description": "RFC 8210 §12 error code: the Error Report's, or, with error_origin client, the error RAVEN found: 6 (Withdrawal of Unknown Record) or 7 (Duplicate Announcement Received)."
+          "description": "RFC 8210 §12 error code: the Error Report's, or, with error_origin client, the error RAVEN found: 0 (Corrupt Data: a PDU RAVEN could not parse), 6 (Withdrawal of Unknown Record) or 7 (Duplicate Announcement Received)."
         },
         "error_text": {
           "type": "string",
@@ -429,6 +429,7 @@
             "properties": {
               "error_code": {
                 "enum": [
+                  0,
                   6,
                   7
                 ]

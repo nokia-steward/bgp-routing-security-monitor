@@ -248,10 +248,14 @@ type step struct {
 	wire []WirePDU
 }
 
-// WirePDU is one IPv4 or IPv6 Prefix PDU: an announcement or a withdrawal.
+// WirePDU is one IPv4 or IPv6 Prefix PDU, an announcement or a withdrawal,
+// or raw bytes.
 type WirePDU struct {
 	Announce bool
 	VRP      VRP
+	// Raw, when set, is sent as is instead of a PDU built from Announce
+	// and VRP: a malformed PDU, which the builders cannot make.
+	Raw []byte
 }
 
 // AdvanceWire makes the next serial one whose Serial Query answer carries
@@ -485,6 +489,10 @@ func (s *Server) answer(q Query, version uint8) {
 		for serial := q.Serial + 1; serial <= s.serial; serial++ {
 			st := s.history[serial]
 			for _, w := range st.wire {
+				if w.Raw != nil {
+					pdus = append(pdus, w.Raw)
+					continue
+				}
 				pdus = append(pdus, prefixPDU(version, w.Announce, w.VRP))
 			}
 			for _, v := range st.announceVRPs {
