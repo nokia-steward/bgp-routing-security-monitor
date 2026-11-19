@@ -462,6 +462,16 @@ All notable changes to RAVEN are recorded here.
   above 32 or 128, or whose maxLength was below the prefix length or above
   32 or 128 (#76). It now rejects them with an error. Thanks to Sthefany
   Conceição Duquini for the fix, a first contribution to RAVEN.
+- A Prefix or ASPA PDU the RTR client could not parse was logged and
+  skipped, with no count, no event and no resync, so RAVEN could hold a data
+  set that differed from the cache's (#77). It is now a client fault with
+  RFC 8210 code 0 (Corrupt Data), handled as codes 6 and 7 are: counted in
+  `raven_rtr_protocol_errors_total{code="0"}`, one `error` event per sync
+  with `error_origin` `client` and `error_count`, and a Reset Query on the
+  same session, at most once per 5 minutes per cache. The session is kept,
+  where RFC 8210 drops it. In the NDJSON contract, `error_code` with
+  `error_origin` `client` can now be 0; `schema_version` stays 1, since a new
+  enum value is an additive change.
 
 ## v0.4.0 (2026-10-19)
 

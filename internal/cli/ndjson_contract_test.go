@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
 	"slices"
 	"sort"
@@ -135,6 +136,24 @@ var contractScenarios = map[string]func(t *testing.T) string{
 		srv.Notify()
 		m.waitRecords(t, "sync", 3)
 		m.waitRecords(t, "anomaly", 3)
+		m.stop()
+		return m.ndjson.String()
+	},
+	// an error record with error_origin client and code 0 (a Prefix PDU
+	// the monitor could not parse, in a delta), its structural anomaly
+	// (protocol_error), and the resync it sets off.
+	"corrupt data": func(t *testing.T) string {
+		srv := rtrtest.NewServer(t, monitorCache(2))
+		vrps := rtrtest.GenVRPs(0, 3, 65001)
+		srv.SetData(vrps, nil)
+		m := runMonitor(t, srv, "auto", nil)
+		m.waitRecords(t, "sync", 1)
+		bad := rtrtest.IPv4Prefix(2, true, netip.MustParsePrefix("192.0.2.0/24"), 24, 65009)
+		bad[9], bad[10] = 33, 33 // prefix length and maxLength, past the 8-byte header
+		srv.AdvanceWire([]rtrtest.WirePDU{{Raw: bad}}, vrps)
+		srv.Notify()
+		m.waitRecords(t, "sync", 3) // the delta's and the resync's
+		m.waitRecords(t, "anomaly", 1)
 		m.stop()
 		return m.ndjson.String()
 	},
