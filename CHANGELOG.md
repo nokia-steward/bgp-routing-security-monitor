@@ -458,6 +458,10 @@ All notable changes to RAVEN are recorded here.
   `reset`, `error`, `cache_not_ready`, `disconnected`,
   `version_downgrade`), 0 included; `sync` and `reset` records carry it for
   the first time.
+- The RTR client accepted IPv4 and IPv6 Prefix PDUs whose prefix length was
+  above 32 or 128, or whose maxLength was below the prefix length or above
+  32 or 128 (#76). It now rejects them with an error. Thanks to Sthefany
+  Conceição Duquini for the fix, a first contribution to RAVEN.
 
 ## v0.4.0 (2026-10-19)
 
