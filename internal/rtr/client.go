@@ -1351,6 +1351,12 @@ func (c *Client) parseIPv4Prefix(data []byte) (types.VRP, bool, error) {
 	flags := data[0]
 	prefixLen := int(data[1])
 	maxLen := data[2]
+	if prefixLen > 32 {
+		return types.VRP{}, false, fmt.Errorf("invalid prefix length %d: maximum is 32", prefixLen)
+	}
+	if int(maxLen) < prefixLen || maxLen > 32 {
+		return types.VRP{}, false, fmt.Errorf("invalid max length %d for prefix length %d", maxLen, prefixLen)
+	}
 	// data[3] is zero/reserved
 
 	addr, ok := netip.AddrFromSlice(data[4:8])
@@ -1380,6 +1386,12 @@ func (c *Client) parseIPv6Prefix(data []byte) (types.VRP, bool, error) {
 	flags := data[0]
 	prefixLen := int(data[1])
 	maxLen := data[2]
+	if prefixLen > 128 {
+		return types.VRP{}, false, fmt.Errorf("invalid prefix length %d: maximum is 128", prefixLen)
+	}
+	if int(maxLen) < prefixLen || maxLen > 128 {
+		return types.VRP{}, false, fmt.Errorf("invalid max length %d for prefix length %d", maxLen, prefixLen)
+	}
 
 	addr, ok := netip.AddrFromSlice(data[4:20])
 	if !ok {
