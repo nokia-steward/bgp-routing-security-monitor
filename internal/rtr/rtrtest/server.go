@@ -352,6 +352,15 @@ func (s *Server) SetMaxVersion(v uint8) {
 	s.cfg.MaxVersion = v
 }
 
+// SetRefresh changes the Refresh Interval (seconds) the cache announces in
+// its End of Data PDUs, from the next answer on. Routinator 0.16 lowers it
+// to 1 or 2 seconds shortly before each validation run (#75).
+func (s *Server) SetRefresh(seconds uint32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg.Refresh = seconds
+}
+
 // Then queues actions for the next queries, one each, in order, in place of
 // the default. A queued action applies whatever the query's version.
 func (s *Server) Then(actions ...Action) {

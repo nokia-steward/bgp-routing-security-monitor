@@ -11,19 +11,30 @@ import (
 // integration and seed paths (later steps) can build the metrics map with the
 // exact keys ObserveSync expects.
 const (
-	MetricIntervalSince = "interval_since_ns"
-	MetricSyncDuration  = "sync_duration_ns"
-	MetricVRPAnnounced  = "vrp_announced"
-	MetricVRPWithdrawn  = "vrp_withdrawn"
-	MetricASPAAnnounced = "aspa_announced"
-	MetricASPAWithdrawn = "aspa_withdrawn"
+	// MetricSerialChangeInterval is the time between two syncs that changed
+	// the serial, in one session (see ObserveSyncEvent).
+	MetricSerialChangeInterval = "serial_change_interval_ns"
+	MetricSyncDuration         = "sync_duration_ns"
+	MetricVRPAnnounced         = "vrp_announced"
+	MetricVRPWithdrawn         = "vrp_withdrawn"
+	MetricASPAAnnounced        = "aspa_announced"
+	MetricASPAWithdrawn        = "aspa_withdrawn"
 )
+
+// MetricIntervalSince is the statistic the detector scored before
+// serial_change_interval_ns: the time between polls (the sync record's
+// interval_since_ns, which is unchanged). A cache sets the poll interval
+// with its End of Data refresh, and Routinator 0.16 drops it to 1-2 s
+// before each validation run, so the polls said more about the cache's
+// timer than about its data (#75). The detector no longer scores it, and
+// Load drops its window from older snapshots.
+const MetricIntervalSince = "interval_since_ns"
 
 // trackedMetrics is the canonical evaluation order. Iterating this (rather
 // than ranging the input map, whose order is randomized) keeps trigger
 // selection and z-score maps deterministic across calls.
 var trackedMetrics = []string{
-	MetricIntervalSince,
+	MetricSerialChangeInterval,
 	MetricSyncDuration,
 	MetricVRPAnnounced,
 	MetricVRPWithdrawn,
@@ -187,7 +198,9 @@ type Totals struct {
 // TotalsOf returns a sync event's totals.
 func TotalsOf(ev SessionEvent) Totals { return Totals{VRPs: ev.VRPTotal, ASPAs: ev.ASPATotal} }
 
-// SyncMetrics builds the metric map ObserveSync expects from a sync event.
+// SyncMetrics builds the metric map ObserveSync expects from a sync event,
+// but for serial_change_interval_ns, which takes the syncs before it (see
+// ObserveSyncEvent).
 //
 // The count statistics keep their names (vrp_announced, ...) but take the
 // sync's net change (vrp_added, vrp_removed, aspa_added, aspa_removed), not
@@ -202,7 +215,6 @@ func TotalsOf(ev SessionEvent) Totals { return Totals{VRPs: ev.VRPTotal, ASPAs: 
 // and only values above the median can trip.
 func SyncMetrics(ev SessionEvent) map[string]float64 {
 	return map[string]float64{
-		MetricIntervalSince: float64(ev.IntervalSince),
 		MetricSyncDuration:  float64(ev.SyncDuration),
 		MetricVRPAnnounced:  float64(ev.VRPAdded),
 		MetricVRPWithdrawn:  float64(ev.VRPRemoved),
@@ -219,7 +231,16 @@ func SyncMetrics(ev SessionEvent) map[string]float64 {
 // therefore max(MAD, floor), with a floor that says how small a deviation
 // is still noise for that statistic, whatever the window's spread:
 //
-//   - interval_since_ns, sync_duration_ns: max(1% of |median|, 1 s). Timer
+//   - serial_change_interval_ns: max(25% of |median|, 1 s). A cache's
+//     serial changes when a validation run changed its data, and a run
+//     that changed nothing, or one that ran long, doubles the interval:
+//     on server1's Routinator (#75), 36 days of serial changes had a
+//     median of 714 s and a MAD of 10 s, and 65 of 4,102 intervals were
+//     over 15 minutes, most about twice the median. With a 1% floor that
+//     gave 73 high anomalies; with 25%, none. A hard trip needs about 3.2 times the
+//     usual interval. A cache whose serial stops changing altogether is
+//     data staleness (see DataTracker), reported while it lasts.
+//   - sync_duration_ns: max(1% of |median|, 1 s). Timer
 //     and scheduling jitter, and the time a sync itself takes, are of the
 //     order of a second or of a small fraction of the cadence; 1% of a 600 s
 //     cadence is 6 s. A hard trip then needs about 9 s (1 s floor x 6 /
@@ -243,6 +264,7 @@ func SyncMetrics(ev SessionEvent) map[string]float64 {
 const (
 	timingFloorAbs = float64(time.Second)
 	timingFloorRel = 0.01
+	serialFloorRel = 0.25
 	vrpFloorRel    = 0.0001
 	aspaFloorRel   = 0.001
 	countFloorAbs  = 1.0
@@ -252,7 +274,9 @@ const (
 // the cache's totals.
 func minScale(metric string, median float64, totals Totals) float64 {
 	switch metric {
-	case MetricIntervalSince, MetricSyncDuration:
+	case MetricSerialChangeInterval:
+		return math.Max(serialFloorRel*math.Abs(median), timingFloorAbs)
+	case MetricSyncDuration:
 		return math.Max(timingFloorRel*math.Abs(median), timingFloorAbs)
 	case MetricVRPAnnounced, MetricVRPWithdrawn:
 		return math.Max(countFloorAbs, vrpFloorRel*float64(totals.VRPs))
@@ -297,6 +321,10 @@ type Detector struct {
 	cfg     AnomalyConfig
 	mu      sync.Mutex
 	windows map[string]map[string]*metricWindow // cache -> metric -> window
+	// serialSince is, per cache, when the current session last changed
+	// the serial; absent until a sync in the session has (see
+	// ObserveSyncEvent).
+	serialSince map[string]time.Time
 	// data tracks staleness and returns to earlier data; its gap history
 	// is saved and loaded with the windows.
 	data *DataTracker
@@ -305,9 +333,10 @@ type Detector struct {
 // NewDetector returns a detector configured with cfg.
 func NewDetector(cfg AnomalyConfig) *Detector {
 	return &Detector{
-		cfg:     cfg,
-		windows: make(map[string]map[string]*metricWindow),
-		data:    NewDataTracker(),
+		cfg:         cfg,
+		windows:     make(map[string]map[string]*metricWindow),
+		serialSince: make(map[string]time.Time),
+		data:        NewDataTracker(),
 	}
 }
 
@@ -342,6 +371,51 @@ func (d *Detector) ObserveError(cache string, code *uint16, ts time.Time) *Anoma
 		return nil
 	}
 	return d.ObserveStructural(cache, "error_report", ts)
+}
+
+// ObserveSyncEvent evaluates a sync record: its SyncMetrics and, when it
+// changed the serial, serial_change_interval_ns, the time since the sync
+// before it in the session that changed the serial. A poll that finds the
+// serial unchanged is not a serial change, however soon it follows the last
+// poll: how often a cache is polled is up to its End of Data refresh, which
+// Routinator 0.16 drops to 1-2 s before each validation run (#75).
+//
+// A full sync (Reset Query) is not evaluated (nil): it reports the whole
+// data set, not a change. It starts a session's serial afresh, as does
+// ObserveSession: the first serial change after either sets the clock and
+// has no interval, so the time a session was down is never taken for one.
+// A record without serial_changed (from a RAVEN before it) has none either.
+func (d *Detector) ObserveSyncEvent(ev SessionEvent) *AnomalyEvent {
+	d.mu.Lock()
+	since, known := d.serialSince[ev.Cache]
+	changed := ev.SerialChanged != nil && *ev.SerialChanged
+	switch {
+	case ev.SyncType == SyncTypeFull:
+		delete(d.serialSince, ev.Cache)
+	case changed:
+		d.serialSince[ev.Cache] = ev.Timestamp
+	}
+	d.mu.Unlock()
+	if ev.SyncType == SyncTypeFull {
+		return nil
+	}
+	metrics := SyncMetrics(ev)
+	if changed && known {
+		metrics[MetricSerialChangeInterval] = float64(ev.Timestamp.Sub(since))
+	}
+	return d.ObserveSyncTotals(ev.Cache, ev.Timestamp, metrics, TotalsOf(ev))
+}
+
+// ObserveSession takes in a connected or disconnected record: the session
+// the cache's last serial change was in is over, so the next serial change
+// has no interval (see ObserveSyncEvent). Other records are ignored.
+func (d *Detector) ObserveSession(ev SessionEvent) {
+	if ev.EventType != EventConnected && ev.EventType != EventDisconnected {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.serialSince, ev.Cache)
 }
 
 // ObserveSync evaluates one sync's metrics against the rolling windows and

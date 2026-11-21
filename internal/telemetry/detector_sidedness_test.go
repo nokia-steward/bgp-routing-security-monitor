@@ -12,12 +12,12 @@ import (
 // every window has a nonzero MAD and every metric is evaluated.
 func longBaseline(i int) map[string]float64 {
 	return map[string]float64{
-		MetricIntervalSince: float64(840*time.Second + time.Duration(i%121)*time.Second),
-		MetricSyncDuration:  float64(10*time.Second + time.Duration(i%41)*100*time.Millisecond),
-		MetricVRPAnnounced:  float64(1000 + i%201),
-		MetricVRPWithdrawn:  float64(800 + i%161),
-		MetricASPAAnnounced: float64(100 + i%41),
-		MetricASPAWithdrawn: float64(50 + i%21),
+		MetricSerialChangeInterval: float64(840*time.Second + time.Duration(i%121)*time.Second),
+		MetricSyncDuration:         float64(10*time.Second + time.Duration(i%41)*100*time.Millisecond),
+		MetricVRPAnnounced:         float64(1000 + i%201),
+		MetricVRPWithdrawn:         float64(800 + i%161),
+		MetricASPAAnnounced:        float64(100 + i%41),
+		MetricASPAWithdrawn:        float64(50 + i%21),
 	}
 }
 
@@ -43,17 +43,17 @@ func TestShortIntervalAndFastSyncDoNotTrip(t *testing.T) {
 
 	for i, interval := range []time.Duration{5 * time.Second, 10 * time.Second, 15 * time.Second} {
 		m := longBaseline(i)
-		m[MetricIntervalSince] = float64(interval)
+		m[MetricSerialChangeInterval] = float64(interval)
 		m[MetricSyncDuration] = float64(200 * time.Millisecond)
 
 		before := map[string]int{}
-		for _, name := range []string{MetricIntervalSince, MetricSyncDuration} {
+		for _, name := range []string{MetricSerialChangeInterval, MetricSyncDuration} {
 			before[name] = d.window(testCache, name).count()
 		}
 		if ev := d.ObserveSync(testCache, time.Unix(1_700_100_000+int64(i), 0), m); ev != nil {
 			t.Fatalf("interval %v with a 200ms sync tripped: %+v", interval, ev)
 		}
-		for _, name := range []string{MetricIntervalSince, MetricSyncDuration} {
+		for _, name := range []string{MetricSerialChangeInterval, MetricSyncDuration} {
 			if got := d.window(testCache, name).count(); got != before[name]+1 {
 				t.Fatalf("%s window count %d -> %d: a short value was held out of the window", name, before[name], got)
 			}
@@ -66,7 +66,7 @@ func TestShortIntervalAndFastSyncDoNotTrip(t *testing.T) {
 func TestLongIntervalAndSlowSyncStillTrip(t *testing.T) {
 	cfg := DefaultAnomalyConfig()
 
-	for _, metric := range []string{MetricIntervalSince, MetricSyncDuration} {
+	for _, metric := range []string{MetricSerialChangeInterval, MetricSyncDuration} {
 		t.Run(metric+"/hard", func(t *testing.T) {
 			d := NewDetector(cfg)
 			warmUp(t, d, 150, longBaseline)
@@ -87,13 +87,13 @@ func TestLongIntervalAndSlowSyncStillTrip(t *testing.T) {
 		warmUp(t, d, 150, longBaseline)
 		const z = 4.0 // above soft 3.5, below hard 6.0
 		m := longBaseline(0)
-		m[MetricIntervalSince] = valueAtZ(t, d, MetricIntervalSince, z)
+		m[MetricSerialChangeInterval] = valueAtZ(t, d, MetricSerialChangeInterval, z)
 		if ev := d.ObserveSync(testCache, time.Unix(1_700_100_000, 0), m); ev != nil {
 			t.Fatalf("one soft crosser tripped: %+v", ev)
 		}
 
 		m = longBaseline(1)
-		m[MetricIntervalSince] = valueAtZ(t, d, MetricIntervalSince, z)
+		m[MetricSerialChangeInterval] = valueAtZ(t, d, MetricSerialChangeInterval, z)
 		m[MetricSyncDuration] = valueAtZ(t, d, MetricSyncDuration, z)
 		ev := d.ObserveSync(testCache, time.Unix(1_700_100_100, 0), m)
 		if ev == nil || ev.Severity != "medium" || ev.Trigger != "correlated" {
@@ -110,7 +110,7 @@ func TestLongIntervalAndSlowSyncStillTrip(t *testing.T) {
 		d := NewDetector(cfg)
 		warmUp(t, d, 150, longBaseline)
 		m := longBaseline(0)
-		m[MetricIntervalSince] = valueAtZ(t, d, MetricIntervalSince, -4)
+		m[MetricSerialChangeInterval] = valueAtZ(t, d, MetricSerialChangeInterval, -4)
 		m[MetricSyncDuration] = valueAtZ(t, d, MetricSyncDuration, -4)
 		if ev := d.ObserveSync(testCache, time.Unix(1_700_100_000, 0), m); ev != nil {
 			t.Fatalf("short interval + fast sync at z=-4 tripped: %+v", ev)
@@ -153,7 +153,7 @@ func TestSeedBaselineKeepsShortIntervals(t *testing.T) {
 	ts := time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC)
 	line := func(interval, duration time.Duration) {
 		ts = ts.Add(interval)
-		fmt.Fprintf(&b, `{"timestamp":%q,"cache":%q,"event_type":"sync","vrp_announced":%d,"vrp_withdrawn":%d,"sync_duration_ns":%d,"interval_since_ns":%d,"sync_type":"incremental"}`+"\n",
+		fmt.Fprintf(&b, `{"timestamp":%q,"cache":%q,"event_type":"sync","vrp_announced":%d,"vrp_withdrawn":%d,"sync_duration_ns":%d,"interval_since_ns":%d,"sync_type":"incremental","serial_changed":true}`+"\n",
 			ts.Format(time.RFC3339Nano), testCache, 10+b.Len()%17, 5+b.Len()%13, duration, interval)
 	}
 	const long, short = 150, 20
@@ -168,9 +168,10 @@ func TestSeedBaselineKeepsShortIntervals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SeedBaseline: %v", err)
 	}
-	for _, metric := range []string{MetricIntervalSince, MetricSyncDuration} {
-		if got := d.window(testCache, metric).count(); got != long+short {
-			t.Fatalf("seeded %s window holds %d values, want %d: short values were dropped as anomalies", metric, got, long+short)
+	// Every sync changes the serial; the first has no interval before it.
+	for metric, want := range map[string]int{MetricSerialChangeInterval: long + short - 1, MetricSyncDuration: long + short} {
+		if got := d.window(testCache, metric).count(); got != want {
+			t.Fatalf("seeded %s window holds %d values, want %d: short values were dropped as anomalies", metric, got, want)
 		}
 	}
 }

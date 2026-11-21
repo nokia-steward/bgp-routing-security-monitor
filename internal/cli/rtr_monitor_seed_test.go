@@ -42,7 +42,7 @@ func TestMonitorSeedsDataGapsFromLogFile(t *testing.T) {
 	}
 	logs := &lockedBuffer{}
 	configureDataTracker(detector.Data(), 0, nil)
-	seedDataGaps(detector.Data(), logFile, []string{cache}, slog.New(slog.NewTextHandler(logs, nil)))
+	seedFromLog(detector, logFile, []string{cache}, slog.New(slog.NewTextHandler(logs, nil)))
 
 	_, cold, err := telemetry.SeedBaseline(bytes.NewReader(raw))
 	if err != nil {
@@ -62,7 +62,7 @@ func TestMonitorSeedsDataGapsFromLogFile(t *testing.T) {
 	// No log file yet (a first start): nothing seeded, nothing logged.
 	fresh := telemetry.NewDetector(telemetry.DefaultAnomalyConfig())
 	quiet := &lockedBuffer{}
-	seedDataGaps(fresh.Data(), filepath.Join(dir, "none.ndjson"), []string{cache}, slog.New(slog.NewTextHandler(quiet, nil)))
+	seedFromLog(fresh, filepath.Join(dir, "none.ndjson"), []string{cache}, slog.New(slog.NewTextHandler(quiet, nil)))
 	if _, _, n := fresh.Data().Threshold(cache); n != 0 || quiet.String() != "" {
 		t.Errorf("no log file: %d gaps, log %q, want none", n, quiet.String())
 	}
@@ -137,7 +137,7 @@ func TestMonitorStaleThresholdWinsOverSeededHistory(t *testing.T) {
 
 	detector := telemetry.NewDetector(telemetry.DefaultAnomalyConfig())
 	configureDataTracker(detector.Data(), 3*time.Hour, nil)
-	seedDataGaps(detector.Data(), logFile, []string{cache}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	seedFromLog(detector, logFile, []string{cache}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	thr, src, n := detector.Data().Threshold(cache)
 	if thr != 3*time.Hour || src != telemetry.ThresholdConfigured {
 		t.Errorf("--stale-threshold 3h over a seeded history: %v (%s), want 3h (configured)", thr, src)

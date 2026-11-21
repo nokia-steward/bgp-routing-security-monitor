@@ -20,7 +20,7 @@ func TestSyncMetricsUseNetCounts(t *testing.T) {
 		IntervalSince: time.Minute, SyncDuration: time.Second,
 	}
 	want := map[string]float64{
-		MetricIntervalSince: float64(time.Minute), MetricSyncDuration: float64(time.Second),
+		MetricSyncDuration: float64(time.Second),
 		MetricVRPAnnounced: 21, MetricVRPWithdrawn: 8, MetricASPAAnnounced: 1, MetricASPAWithdrawn: 1,
 	}
 	if got := SyncMetrics(ev); !reflect.DeepEqual(got, want) {
@@ -29,10 +29,9 @@ func TestSyncMetricsUseNetCounts(t *testing.T) {
 }
 
 // pduMetrics is the metric map RAVEN built before the net counts: the PDU
-// counts.
+// counts (and interval_since_ns, no longer scored, #75).
 func pduMetrics(ev SessionEvent) map[string]float64 {
 	return map[string]float64{
-		MetricIntervalSince: float64(ev.IntervalSince),
 		MetricSyncDuration:  float64(ev.SyncDuration),
 		MetricVRPAnnounced:  float64(ev.VRPAnnounced),
 		MetricVRPWithdrawn:  float64(ev.VRPWithdrawn),
@@ -47,6 +46,7 @@ func pduMetrics(ev SessionEvent) map[string]float64 {
 func cleanSyncs(cache string, n int, start time.Time, interval time.Duration, vrps, aspas int) []SessionEvent {
 	r := rand.New(rand.NewPCG(uint64(len(cache)), uint64(n)))
 	out := make([]SessionEvent, n)
+	changed := true
 	for i := range out {
 		ann, wd := vrps+r.IntN(vrps/2+1), vrps/2+r.IntN(vrps/2+1)
 		aann, awd := r.IntN(aspas+1), r.IntN(aspas+1)
@@ -55,7 +55,7 @@ func cleanSyncs(cache string, n int, start time.Time, interval time.Duration, vr
 		}
 		out[i] = SessionEvent{
 			Timestamp: start.Add(time.Duration(i) * interval), Cache: cache,
-			EventType: EventSync, SyncType: SyncTypeIncremental,
+			EventType: EventSync, SyncType: SyncTypeIncremental, SerialChanged: &changed,
 			VRPTotal: 500_000, ASPATotal: 800,
 			VRPAnnounced: ann, VRPWithdrawn: wd, VRPAdded: ann, VRPRemoved: wd,
 			ASPAAnnounced: aann, ASPAWithdrawn: awd, ASPAAdded: aann, ASPARemoved: awd,
@@ -97,7 +97,7 @@ func TestV040SnapshotScoresNetCountsAsBefore(t *testing.T) {
 				trips++
 			}
 		}
-		for _, metric := range trackedMetrics {
+		for _, metric := range v040Metrics() {
 			bm, bmad, _ := before.window(c.cache, metric).medianMAD()
 			am, amad, _ := after.window(c.cache, metric).medianMAD()
 			if bm != am || bmad != amad {

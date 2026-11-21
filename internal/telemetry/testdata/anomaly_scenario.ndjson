@@ -119,5 +119,5 @@
 {"timestamp":"2026-07-03T20:30:00Z","cache":"localhost:3323","event_type":"sync","serial":119,"vrp_announced":19,"vrp_withdrawn":7,"sync_duration_ns":14432978444,"interval_since_ns":934074800781,"sync_type":"incremental"}
 {"timestamp":"2026-07-03T20:45:00Z","cache":"localhost:3323","event_type":"sync","serial":120,"vrp_announced":5,"vrp_withdrawn":15,"sync_duration_ns":13445336167,"interval_since_ns":938936679442,"sync_type":"incremental"}
 {"timestamp":"2026-07-03T21:00:00Z","cache":"localhost:3323","event_type":"sync","serial":121,"vrp_announced":12,"vrp_withdrawn":5000,"sync_duration_ns":12500000000,"interval_since_ns":900000000000,"sync_type":"incremental"}
-{"timestamp":"2026-07-03T21:15:00Z","cache":"localhost:3323","event_type":"sync","serial":122,"vrp_announced":12,"vrp_withdrawn":9,"sync_duration_ns":19990471137,"interval_since_ns":1097824045182,"sync_type":"incremental"}
+{"timestamp":"2026-07-03T21:15:00Z","cache":"localhost:3323","event_type":"sync","serial":122,"vrp_announced":12,"vrp_withdrawn":9,"sync_duration_ns":19990471137,"interval_since_ns":2400000000000,"sync_type":"incremental"}
 {"timestamp":"2026-07-03T21:30:00Z","cache":"localhost:3323","event_type":"reset","reset_reason":"cache_reset_pdu"}

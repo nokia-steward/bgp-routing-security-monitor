@@ -36,16 +36,18 @@ func loadScenario(t *testing.T) []SessionEvent {
 	return events
 }
 
-// syncMetrics builds the metric map ObserveSync expects from a sync event,
-// mirroring the live path (rtr_monitor.go) and seed.go.
+// syncMetrics builds the metric map ObserveSync expects from a sync event.
+// The fixture's interval_since_ns stands in for serial_change_interval_ns,
+// the timing statistic the detector scores now (#75): the scenario tests
+// the detector's trips, not how the interval is measured.
 func syncMetrics(ev SessionEvent) map[string]float64 {
 	return map[string]float64{
-		MetricIntervalSince: float64(ev.IntervalSince),
-		MetricSyncDuration:  float64(ev.SyncDuration),
-		MetricVRPAnnounced:  float64(ev.VRPAnnounced),
-		MetricVRPWithdrawn:  float64(ev.VRPWithdrawn),
-		MetricASPAAnnounced: float64(ev.ASPAAnnounced),
-		MetricASPAWithdrawn: float64(ev.ASPAWithdrawn),
+		MetricSerialChangeInterval: float64(ev.IntervalSince),
+		MetricSyncDuration:         float64(ev.SyncDuration),
+		MetricVRPAnnounced:         float64(ev.VRPAnnounced),
+		MetricVRPWithdrawn:         float64(ev.VRPWithdrawn),
+		MetricASPAAnnounced:        float64(ev.ASPAAnnounced),
+		MetricASPAWithdrawn:        float64(ev.ASPAWithdrawn),
 	}
 }
 
@@ -109,7 +111,7 @@ func TestDetectorScenario(t *testing.T) {
 	if corrEv.Trigger != "correlated" {
 		t.Fatalf("correlated trigger = %q, want %q", corrEv.Trigger, "correlated")
 	}
-	for _, m := range []string{MetricSyncDuration, MetricIntervalSince} {
+	for _, m := range []string{MetricSyncDuration, MetricSerialChangeInterval} {
 		if _, ok := corrEv.ZScores[m]; !ok {
 			t.Fatalf("correlated ZScores missing %q: %v", m, corrEv.ZScores)
 		}
@@ -118,8 +120,8 @@ func TestDetectorScenario(t *testing.T) {
 		t.Fatalf("correlated ZScores = %v, want exactly the two crossing metrics", corrEv.ZScores)
 	}
 	// anomalyTrigger joins the crossers in canonical order (interval before duration).
-	if got := anomalyTrigger(corrEv); got != "interval_since_ns+sync_duration_ns" {
-		t.Fatalf("anomalyTrigger = %q, want %q", got, "interval_since_ns+sync_duration_ns")
+	if got := anomalyTrigger(corrEv); got != "serial_change_interval_ns+sync_duration_ns" {
+		t.Fatalf("anomalyTrigger = %q, want %q", got, "serial_change_interval_ns+sync_duration_ns")
 	}
 
 	// 4. Structural trip: fed via ObserveStructural, high regardless of windows.

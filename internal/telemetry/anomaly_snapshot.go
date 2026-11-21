@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 )
 
@@ -145,6 +146,11 @@ func (d *Detector) Load(path string) error {
 			d.windows[cache] = cacheWindows
 		}
 		for metric, snap := range metrics {
+			// A statistic the detector no longer scores (interval_since_ns,
+			// #75) is dropped, not restored.
+			if !slices.Contains(trackedMetrics, metric) {
+				continue
+			}
 			w := cacheWindows[metric]
 			if w == nil {
 				w = newMetricWindow(d.cfg.WindowSize)

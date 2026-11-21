@@ -96,15 +96,17 @@ func TestScaleFloors(t *testing.T) {
 		totals      Totals
 		want        float64
 	}{
-		{MetricSyncDuration, 0.106 * sec, 0.0013 * sec, Totals{}, sec},             // Fort: 1 s floor
-		{MetricIntervalSince, 600.106 * sec, 0.005 * sec, Totals{}, 6.00106 * sec}, // Fort: 1% of 600 s
-		{MetricIntervalSince, 900 * sec, 30 * sec, Totals{}, 30 * sec},             // MAD above the floor
-		{MetricIntervalSince, 600 * sec, 0, Totals{}, 6 * sec},                     // MAD 0
-		{MetricVRPWithdrawn, 2, 2, Totals{VRPs: 1_000_000}, 100},                   // DaKnObNET
-		{MetricVRPAnnounced, 0, 0, Totals{}, 1},                                    // empty cache
-		{MetricVRPAnnounced, 20, 300, Totals{VRPs: 1_000_000}, 300},                // MAD above
-		{MetricASPAAnnounced, 0, 0, Totals{ASPAs: 5000}, 5},                        // 0.1% of ASPAs
-		{MetricASPAWithdrawn, 0, 0, Totals{ASPAs: 300, VRPs: 1_000_000}, 1},        // floor of 1
+		{MetricSyncDuration, 0.106 * sec, 0.0013 * sec, Totals{}, sec},            // Fort: 1 s floor
+		{MetricSyncDuration, 600.106 * sec, 0.005 * sec, Totals{}, 6.00106 * sec}, // 1% of a long median
+		{MetricSerialChangeInterval, 714 * sec, 10 * sec, Totals{}, 178.5 * sec},  // server1 Routinator: 25% of 714 s
+		{MetricSerialChangeInterval, 900 * sec, 300 * sec, Totals{}, 300 * sec},   // MAD above the floor
+		{MetricSerialChangeInterval, 600 * sec, 0, Totals{}, 150 * sec},           // MAD 0
+		{MetricSerialChangeInterval, 2 * sec, 0, Totals{}, sec},                   // 1 s floor
+		{MetricVRPWithdrawn, 2, 2, Totals{VRPs: 1_000_000}, 100},                  // DaKnObNET
+		{MetricVRPAnnounced, 0, 0, Totals{}, 1},                                   // empty cache
+		{MetricVRPAnnounced, 20, 300, Totals{VRPs: 1_000_000}, 300},               // MAD above
+		{MetricASPAAnnounced, 0, 0, Totals{ASPAs: 5000}, 5},                       // 0.1% of ASPAs
+		{MetricASPAWithdrawn, 0, 0, Totals{ASPAs: 300, VRPs: 1_000_000}, 1},       // floor of 1
 	} {
 		if got := scale(tc.metric, tc.median, tc.mad, tc.totals); math.Abs(got-tc.want) > 1e-6*tc.want {
 			t.Errorf("scale(%s, median %v, mad %v, %+v) = %v, want %v", tc.metric, tc.median, tc.mad, tc.totals, got, tc.want)
@@ -193,25 +195,25 @@ func TestCorrelatedTrip(t *testing.T) {
 	warmUp(t, d, 150, func(i int) map[string]float64 {
 		v := float64(time.Duration(90+i%21) * time.Second)
 		return map[string]float64{
-			MetricSyncDuration:  v,
-			MetricIntervalSince: v,
+			MetricSyncDuration:         v,
+			MetricSerialChangeInterval: v,
 		}
 	})
 
 	// Derive an exact value giving |z| == 4.0 (soft, below hard 6.0) for each.
 	const targetZ = 4.0
 	sdVal := valueAtZ(t, d, MetricSyncDuration, targetZ)
-	isVal := valueAtZ(t, d, MetricIntervalSince, targetZ)
+	isVal := valueAtZ(t, d, MetricSerialChangeInterval, targetZ)
 
 	// One metric elevated alone: only one soft crosser (< CorrelatedCount) -> no trip.
 	if ev := d.ObserveSync(testCache, time.Unix(1_700_100_000, 0),
-		map[string]float64{MetricSyncDuration: sdVal, MetricIntervalSince: float64(100 * time.Second)}); ev != nil {
+		map[string]float64{MetricSyncDuration: sdVal, MetricSerialChangeInterval: float64(100 * time.Second)}); ev != nil {
 		t.Fatalf("single elevated metric tripped: %+v", ev)
 	}
 
 	// Both elevated together: correlated medium trip.
 	ev := d.ObserveSync(testCache, time.Unix(1_700_100_100, 0),
-		map[string]float64{MetricSyncDuration: sdVal, MetricIntervalSince: isVal})
+		map[string]float64{MetricSyncDuration: sdVal, MetricSerialChangeInterval: isVal})
 	if ev == nil {
 		t.Fatal("two elevated metrics did not produce a correlated trip")
 	}

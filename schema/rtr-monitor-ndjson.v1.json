@@ -641,8 +641,8 @@
         },
         "trigger": {
           "type": "string",
-          "pattern": "^(cache_reset|error_report|protocol_error|data_stale|data_regressed|(interval_since_ns|sync_duration_ns|vrp_announced|vrp_withdrawn|aspa_announced|aspa_withdrawn)(\\+(interval_since_ns|sync_duration_ns|vrp_announced|vrp_withdrawn|aspa_announced|aspa_withdrawn))*)$",
-          "description": "structural: cache_reset, error_report, protocol_error (an error with error_origin client), data_stale (with a stale record) or data_regressed (with a data_regressed record). statistical: the metric that tripped the hard threshold, or the metrics that crossed the soft threshold joined with + (a correlated trip)."
+          "pattern": "^(cache_reset|error_report|protocol_error|data_stale|data_regressed|(serial_change_interval_ns|interval_since_ns|sync_duration_ns|vrp_announced|vrp_withdrawn|aspa_announced|aspa_withdrawn)(\\+(serial_change_interval_ns|interval_since_ns|sync_duration_ns|vrp_announced|vrp_withdrawn|aspa_announced|aspa_withdrawn))*)$",
+          "description": "structural: cache_reset, error_report, protocol_error (an error with error_origin client), data_stale (with a stale record) or data_regressed (with a data_regressed record). statistical: the metric that tripped the hard threshold, or the metrics that crossed the soft threshold joined with + (a correlated trip). interval_since_ns is written only by RAVENs before serial_change_interval_ns replaced it (#75)."
         },
         "severity": {
           "type": "string",
@@ -654,9 +654,10 @@
         },
         "z_scores": {
           "type": "object",
-          "description": "Statistical only: modified z (unitless) of each metric at or above its soft threshold.",
+          "description": "Statistical only: modified z (unitless) of each metric at or above its soft threshold. interval_since_ns only from RAVENs before #75.",
           "propertyNames": {
             "enum": [
+              "serial_change_interval_ns",
               "interval_since_ns",
               "sync_duration_ns",
               "vrp_announced",
@@ -671,9 +672,10 @@
         },
         "raw": {
           "type": "object",
-          "description": "Statistical only: every metric's value in the sync (ns for *_ns, counts otherwise).",
+          "description": "Statistical only: every metric's value in the sync (ns for *_ns, counts otherwise). serial_change_interval_ns only on a sync that changed the serial with an earlier one in the session; interval_since_ns only from RAVENs before #75.",
           "propertyNames": {
             "enum": [
+              "serial_change_interval_ns",
               "interval_since_ns",
               "sync_duration_ns",
               "vrp_announced",

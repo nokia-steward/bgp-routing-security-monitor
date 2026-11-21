@@ -1371,8 +1371,12 @@ the compatibility policy. Build parsers against that page.
   it never blocks startup. Seed a snapshot ahead of time with
   `raven rtr seed-baseline` to skip the live warm-up.
 - Each incremental sync is scored against rolling per-metric windows
-  (`interval_since_ns`, `sync_duration_ns`, `vrp_announced`, `vrp_withdrawn`,
-  `aspa_announced`, `aspa_withdrawn`) using median/MAD adaptive thresholds.
+  (`serial_change_interval_ns`, `sync_duration_ns`, `vrp_announced`,
+  `vrp_withdrawn`, `aspa_announced`, `aspa_withdrawn`) using median/MAD
+  adaptive thresholds. `serial_change_interval_ns` is the time between two
+  syncs that changed the serial in one session: a poll that finds the serial
+  unchanged is not scored, however soon it comes after the last (a cache's
+  End of Data refresh decides that).
   The four counts are the sync's net change (the record's `vrp_added`,
   `vrp_removed`, `aspa_added`, `aspa_removed`), not the PDUs received: a
   cache that re-announces records it holds is reported as a
@@ -1416,7 +1420,10 @@ whether each cache's data changes, whatever its serial:
 - The learned gaps are saved in `--anomaly-snapshot`. A cache it holds none
   for (a snapshot from an earlier release, or none) has them rebuilt at
   startup from the `sync` records already in `--log-file`; the log line
-  `seeded gaps between data changes from the log file` gives how many.
+  `seeded gaps between data changes from the log file` gives how many. The
+  `serial_change_interval_ns` window is seeded the same way
+  (`seeded intervals between serial changes from the log file`), and an
+  older snapshot's `interval_since_ns` window is dropped on load.
 
 See [Data Staleness](../reference/data-staleness.md).
 
@@ -1499,12 +1506,12 @@ seeding.
 lines processed: 40320
 sync records:    1342 (7 full syncs skipped)
 window fill levels for localhost:3323:
-  interval_since_ns: 500/500 (full)
-  sync_duration_ns:  500/500 (full)
-  vrp_announced:     500/500 (full)
-  vrp_withdrawn:     500/500 (full)
-  aspa_announced:    500/500 (full)
-  aspa_withdrawn:    500/500 (full)
+  serial_change_interval_ns: 500/500 (full)
+  sync_duration_ns: 500/500 (full)
+  vrp_announced: 500/500 (full)
+  vrp_withdrawn: 500/500 (full)
+  aspa_announced: 500/500 (full)
+  aspa_withdrawn: 500/500 (full)
 gaps between data changes for localhost:3323: 500/500, stale threshold 1h0m0s (learned)
 output: /home/user/.raven/anomaly-baseline.json
 ```

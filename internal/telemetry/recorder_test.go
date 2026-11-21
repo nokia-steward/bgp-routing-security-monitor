@@ -26,12 +26,12 @@ func TestAnomalyTrigger(t *testing.T) {
 			ev: &AnomalyEvent{
 				Trigger: "correlated",
 				ZScores: map[string]float64{
-					MetricASPAWithdrawn: 3.2,
-					MetricVRPAnnounced:  3.9,
-					MetricIntervalSince: 4.4,
+					MetricASPAWithdrawn:        3.2,
+					MetricVRPAnnounced:         3.9,
+					MetricSerialChangeInterval: 4.4,
 				},
 			},
-			want: "interval_since_ns+vrp_announced+aspa_withdrawn",
+			want: "serial_change_interval_ns+vrp_announced+aspa_withdrawn",
 		},
 		{
 			name: "hard-trip single metric passes through unchanged",
