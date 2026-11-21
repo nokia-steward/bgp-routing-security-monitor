@@ -146,7 +146,7 @@ whatever its serial) may go without changing before RAVEN reports it stale:
 `raven_rtr_stale`, a WARN log line and one `rtr_stale` event per episode. The
 default, `0`, learns the threshold per cache from its gaps between data
 changes: max(4 x median, 3 x 90th percentile, 30m), and 4h until 20 gaps are
-known. See [Data Staleness](../reference/data-staleness.md).
+known (at most 4h until 100). See [Data Staleness](../reference/data-staleness.md).
 
 **`rtr.rtr-version`** — The highest RTR protocol version to try. RAVEN
 opens each cache's session at this version and falls back to lower ones

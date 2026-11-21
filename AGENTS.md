@@ -49,7 +49,7 @@ Router (BMP) → BMP Listener → routeCh channel → Validation Engine → Rout
 
 **`internal/routetable/`** — Thread-safe in-memory route table. Hybrid design: 256-shard flat map (keyed by prefix+peer) + BART prefix trie index. Supports queries by prefix, origin ASN, and security posture. Stores every RIB a router reports (Adj-RIB-In pre/post-policy, Loc-RIB, Adj-RIB-Out); queries default to the default view, `types.DefaultView` (Adj-RIB-In pre-policy and Loc-RIB).
 
-**`internal/server/`** — Orchestrates all goroutines (BMP listener, RTR clients, validation, metrics, API). Manages graceful shutdown on SIGTERM/SIGINT.
+**`internal/server/`** — Orchestrates all goroutines (BMP listener, RTR clients, validation, metrics, API). Manages graceful shutdown on SIGTERM/SIGINT/SIGHUP (`server.ShutdownSignals`, which `raven rtr monitor` uses too).
 
 **`internal/api/`** — HTTP/JSON REST API. Endpoints: `/api/v1/status`, `/api/v1/routes`, `/api/v1/peers`, `/api/v1/watch` (streaming).
 

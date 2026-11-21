@@ -331,11 +331,17 @@ The data changes when a sync's set (`data_fingerprint`) differs from the set
 before it. Serials play no part. The data is **stale** when the current set
 has been current longer than max(4 x median, 3 x 90th percentile of the
 cache's gaps between data changes, 30 minutes), or 4 hours until 20 gaps are
-known, or `--stale-threshold`. A **return to earlier data** is a sync whose
+known (at most 4 hours until 100), or `--stale-threshold`. A **return to earlier data** is a sync whose
 set is one of the cache's last 50 (none current more than 7 days ago) that
 is not the current one, and that was current in all, or has been gone, for
 longer than the stale threshold; a briefer return is churn, a data change. It is not a data change: the staleness clock runs
 from when that set was first current.
+
+A cache whose data normally goes several hours unchanged learns a threshold
+above 4 hours, but it is held at 4 hours until 100 gaps are known. Until
+then it is reported `stale` whenever a normal gap runs past 4 hours. Set
+`--stale-threshold` for such a cache (`rtr.stale-threshold` in `raven
+serve`) at least until it has 100 gaps.
 
 ### `stale`
 
@@ -351,8 +357,8 @@ never one per sync, and a structural `anomaly` (`data_stale`) comes with it.
 | `gap_ns` | integer | always | Nanoseconds from `last_change` to this record |
 | `expected_gap_ns` | integer | always | The threshold `gap_ns` exceeded |
 | `syncs_without_change` | integer | always | Syncs since the last data change that saw none |
-| `threshold_source` | string | always | `learned`, `default` (fewer than 20 gaps known) or `configured` (`--stale-threshold`) |
-| `gaps_learned` | integer | always | Gaps between data changes the threshold had to learn from, at most 500 |
+| `threshold_source` | string | always | `learned`, `default` or `configured` (`--stale-threshold`). `default` is the 4-hour default: with fewer than 20 gaps known, and also when a learned threshold above 4 hours is held at the default because fewer than 100 gaps are known. `gaps_learned` tells the two apart |
+| `gaps_learned` | integer | always | Gaps between data changes the threshold had to learn from, at most 500. With `threshold_source` `default`, below 20 means too few to learn from, 20 to 99 a learned threshold held at 4 hours |
 | `cache_state` | string | always | `connected`: the cache answers, serving frozen data. `disconnected`: no session; the cache cannot be reached while its last data ages. As of when the episode began. A disconnected cache that reconnects with the same data stays in the episode |
 | `scope` | string | several `--cache` only | `upstream`: every compared cache went stale within the settle window. `local`: not every cache did. The record is held until this is known: at most the settle window, then the next sync of any cache |
 

@@ -15,8 +15,8 @@ All notable changes to RAVEN are recorded here.
     16 bytes per cache.
   - RAVEN learns each cache's gaps between data changes, across sessions.
     The data is stale past max(4 x median, 3 x p90, 30m) of those gaps, or
-    4h until 20 gaps are known. `--stale-threshold` and
-    `rtr.stale-threshold` override this.
+    4h until 20 gaps are known, and at most 4h until 100 (#80).
+    `--stale-threshold` and `rtr.stale-threshold` override this.
   - Each stale episode gives one `stale` record and one `stale_resolved`.
     The data age is checked at every sync and every 15 seconds, so a cache
     goes stale when its threshold passes, and a cache that stops syncing
@@ -42,7 +42,8 @@ All notable changes to RAVEN are recorded here.
     only, never FlowSpec.
   - The learned gaps are saved in the anomaly snapshot and seeded by
     `raven rtr seed-baseline`, as additive `data_gaps`. Older snapshots load
-    with no gap history.
+    with no gap history, which `raven rtr monitor` then rebuilds from
+    `--log-file` (#80).
   - Additive to NDJSON schema version 1: one new `sync` field and three
     record types. See the new Data Staleness reference page.
 
@@ -351,6 +352,31 @@ All notable changes to RAVEN are recorded here.
   Anomaly counts and z values change accordingly.
 
 ### Fixed
+- After an upgrade, `raven rtr monitor` learned each cache's stale threshold
+  from scratch (#80). An `--anomaly-snapshot` from before `data_gaps` has no
+  gap history, though `--log-file` may go back days. On ASPA Explorer's
+  Cloudflare monitor, upgraded on 15 November 2026, stalls of 3h06m and
+  3h56m that a replay of the whole file flags went unreported under the
+  4-hour default, and the first learned gaps were mostly node stalls: the
+  threshold went to 9h17m at 20 gaps and stayed above 4h up to 59. Now:
+  - A cache with no gap history has it rebuilt at startup from the `sync`
+    records already in `--log-file`, before the first live sync, by the
+    same rules (`data_fingerprint` where present, the totals before it).
+    The threshold it starts with is the one `raven rtr seed-baseline` gives
+    for that file. RAVEN logs the gaps seeded per cache. `raven serve`
+    keeps no gap history across restarts, and is unchanged.
+  - Until 100 gaps are known, a learned threshold is at most the 4-hour
+    default; above it, the default stands (`threshold_source` `default`).
+    In `raven serve` too. 20 gaps can be mostly stalls; at 100, ten stalls
+    no longer widen the threshold. A cache whose data normally goes longer
+    than 4 hours unchanged is reported stale until then, where it was until
+    20 gaps; `--stale-threshold` suits it.
+- SIGHUP ended `raven rtr monitor` and `raven serve` at once, Go's default
+  (#82): no `disconnected` (`shutdown`) record and no final
+  `--anomaly-snapshot` write in `raven rtr monitor`, no shutdown snapshots
+  in `raven serve`. A closed terminal or SSH session, or `tmux
+  kill-session`, sends it. SIGHUP now shuts both down as SIGINT and
+  SIGTERM do, through the same path.
 - A VRP an RTR cache announced again without withdrawing it was stored and
   counted twice: in `vrp_total`, `raven_rtr_vrp_count`, `/api/v1/status`
   and the ROV trace's matched VRPs (#66). Each distinct VRP now counts once.

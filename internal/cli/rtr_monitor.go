@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -19,6 +18,7 @@ import (
 	"github.com/nokia-steward/bgp-routing-security-monitor/internal/metrics"
 	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr"
 	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr/store"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/server"
 	"github.com/nokia-steward/bgp-routing-security-monitor/internal/telemetry"
 )
 
@@ -342,6 +342,7 @@ change that reached every cache at once (upstream_change).`,
 				initAnomalyMetrics(cache)
 			}
 			configureDataTracker(detector.Data(), staleThreshold, set.cmp)
+			seedDataGaps(detector.Data(), logFile, caches, log)
 
 			// Consume the telemetry event channel: feed sync/structural events to
 			// the detector, emit any resulting anomaly as an NDJSON record on the
@@ -364,7 +365,9 @@ change that reached every cache at once (upstream_change).`,
 				}, log)
 			}()
 
-			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			// SIGHUP too: a closed terminal or tmux session must not
+			// skip the shutdown records and the final snapshot (#82).
+			ctx, stop := signal.NotifyContext(context.Background(), server.ShutdownSignals...)
 			defer stop()
 
 			if prometheus != "" {
@@ -432,7 +435,7 @@ change that reached every cache at once (upstream_change).`,
 	cmd.Flags().StringVar(&rtrVersion, "rtr-version", "auto",
 		"RTR protocol version: auto negotiates from 2 down to what the cache supports; 0, 1 or 2 pins the session to that version, with no fallback")
 	cmd.Flags().DurationVar(&staleThreshold, "stale-threshold", 0,
-		"how long a cache's data may go without changing before it is reported stale (0: learned per cache, max(4 x median gap, 3 x p90 gap, 30m) between data changes; 4h until 20 gaps are known)")
+		"how long a cache's data may go without changing before it is reported stale (0: learned per cache, max(4 x median gap, 3 x p90 gap, 30m) between data changes; 4h until 20 gaps are known, at most 4h until 100)")
 	cmd.Flags().StringVar(&anomalySnapshot, "anomaly-snapshot", "~/.raven/anomaly-baseline.json", "path to the adaptive anomaly-detector baseline snapshot (JSON)")
 
 	return cmd
@@ -457,6 +460,41 @@ func configureDataTracker(t *telemetry.DataTracker, threshold time.Duration, cmp
 	t.SetThreshold(threshold)
 	if cmp != nil {
 		t.SetGroup(cmp.Compared)
+	}
+}
+
+// seedDataGaps fills in, before the first live sync, the gap history of
+// each cache the anomaly snapshot had none for (one from before data_gaps,
+// or no snapshot) from the sync records already in logFile (#80), and logs
+// how many gaps it seeded per cache. Without it such a cache learns from
+// scratch, and its first gaps can be mostly stalls. A missing or unreadable
+// log seeds nothing; it never blocks startup.
+func seedDataGaps(t *telemetry.DataTracker, logFile string, caches []string, log *slog.Logger) {
+	f, err := os.Open(logFile)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Warn("could not read the log file for gaps between data changes", "log_file", logFile, "error", err)
+		}
+		return
+	}
+	defer f.Close()
+	seeded, skipped, err := t.SeedGaps(f, caches)
+	if err != nil {
+		log.Warn("could not seed gaps between data changes from the log file", "log_file", logFile, "error", err)
+		return
+	}
+	if skipped > 0 {
+		log.Warn("skipped unreadable lines of the log file while seeding gaps between data changes",
+			"log_file", logFile, "lines", skipped)
+	}
+	for _, cache := range caches {
+		n, ok := seeded[cache]
+		if !ok {
+			continue
+		}
+		thr, src, _ := t.Threshold(cache)
+		log.Info("seeded gaps between data changes from the log file", "cache", cache, "gaps", n,
+			"threshold", thr, "threshold_source", src, "log_file", logFile)
 	}
 }
 

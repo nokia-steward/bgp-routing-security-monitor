@@ -54,6 +54,11 @@ max(4 x median gap, 3 x 90th percentile gap, 30 minutes)
 
 - Until 20 gaps are known, the threshold is **4 hours** (`threshold_source`
   `default`).
+- Until 100 gaps are known, a learned threshold is **at most 4 hours**: one
+  above it gives way to the 4 hours (`default`). A short history can be
+  mostly stalls, which would widen the threshold and hide the next. A cache
+  whose data normally goes longer than 4 hours unchanged is reported stale
+  until then; set `--stale-threshold` for it.
 - `--stale-threshold` (`rtr.stale-threshold` in `raven serve`) sets it for
   every cache (`configured`).
 - The 30-minute floor keeps a cache whose data changes every few minutes from
@@ -80,7 +85,13 @@ check.
 
 The learned gaps are saved in the anomaly snapshot (`--anomaly-snapshot`) and
 seeded by `raven rtr seed-baseline`, as `data_gaps`, an additive field.
-Snapshots from earlier releases load with no gap history.
+Snapshots from earlier releases load with no gap history. For each cache
+with none (no snapshot, one from an earlier release, or one without that
+cache), `raven rtr monitor` then rebuilds it from the `sync` records already
+in `--log-file`, before the first live sync, by the same rules
+(`data_fingerprint` where present, the totals before it). It logs how many
+gaps it seeded per cache. `raven serve` keeps no gap history across
+restarts: it learns each cache's again.
 
 ### Connected or disconnected
 
@@ -157,7 +168,7 @@ summarized here with a real example line.
 | `gap_ns` | Nanoseconds from `last_change` to this record |
 | `expected_gap_ns` | The threshold `gap_ns` exceeded |
 | `syncs_without_change` | Syncs since the last data change that saw none |
-| `threshold_source` | `learned`, `default` (fewer than 20 gaps) or `configured` |
+| `threshold_source` | `learned`, `default` (fewer than 20 gaps, or a learned threshold above 4h with fewer than 100) or `configured` |
 | `gaps_learned` | Gaps the threshold had to learn from (at most 500) |
 | `scope` | With several `--cache`: `upstream` or `local`. Absent with one |
 | `cache_state` | `connected` or `disconnected`, as the episode began ([below](#connected-or-disconnected)) |
