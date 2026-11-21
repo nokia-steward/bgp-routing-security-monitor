@@ -4,7 +4,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 const maxOffenders = 10

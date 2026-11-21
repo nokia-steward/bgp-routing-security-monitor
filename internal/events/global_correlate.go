@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/external"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/external"
 )
 
 // Enricher is an Action that annotates the event in place before the

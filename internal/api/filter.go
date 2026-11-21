@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/routetable"
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/routetable"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // routeFilter is the route query of /api/v1/routes and /api/v1/watch: every

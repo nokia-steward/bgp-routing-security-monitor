@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/config"
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store/storetest"
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/config"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr/store/storetest"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // BenchmarkIngestDuringSessionEnd measures what a large session end costs

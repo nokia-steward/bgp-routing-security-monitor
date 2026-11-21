@@ -9,7 +9,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // addPathCap is an ADD-PATH capability (code 69) for (afi, safi) with the

@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/audit"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/audit"
 	"github.com/spf13/cobra"
 )
 

@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // ListRoutes lists the default view (Adj-RIB-In pre-policy and Loc-RIB)

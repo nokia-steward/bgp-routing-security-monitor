@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/external"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/external"
 )
 
 // stubServer serves a fixture from an httptest server and counts requests.

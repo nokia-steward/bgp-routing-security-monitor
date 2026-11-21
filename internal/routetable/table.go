@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	"github.com/gaissmai/bart"
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 const defaultShards = 256

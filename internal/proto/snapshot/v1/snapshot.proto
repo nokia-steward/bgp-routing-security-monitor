@@ -1,6 +1,6 @@
 syntax = "proto3";
 package snapshot.v1;
-option go_package = "github.com/nokia/bgp-routing-security-monitor/internal/snapshot/v1;snapshotv1";
+option go_package = "github.com/nokia-steward/bgp-routing-security-monitor/internal/snapshot/v1;snapshotv1";
 
 // RouteSnapshot is the full Route Table snapshot written on shutdown.
 message RouteSnapshot {

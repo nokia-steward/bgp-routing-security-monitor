@@ -4,7 +4,7 @@ import (
 	"net/netip"
 	"slices"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // Delta describes how an RTR sync changed the VRP and ASPA stores, so only

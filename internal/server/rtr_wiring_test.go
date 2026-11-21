@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/config"
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr"
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/rtrtest"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/config"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr/rtrtest"
 )
 
 // In raven serve, every completed RTR sync records the cache as synced, but

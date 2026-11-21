@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/flowspec"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/flowspec"
 )
 
 const (

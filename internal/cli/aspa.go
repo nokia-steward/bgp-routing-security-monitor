@@ -7,7 +7,7 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/aspa/recommender"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/aspa/recommender"
 	"github.com/spf13/cobra"
 )
 

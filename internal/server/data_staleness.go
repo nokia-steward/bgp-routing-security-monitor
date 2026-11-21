@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/events"
-	"github.com/nokia/bgp-routing-security-monitor/internal/metrics"
-	"github.com/nokia/bgp-routing-security-monitor/internal/telemetry"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/events"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/metrics"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/telemetry"
 )
 
 // dataGaugeEvery is how often each cache's data age is evaluated between

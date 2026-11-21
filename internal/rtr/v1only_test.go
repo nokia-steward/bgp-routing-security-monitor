@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/rtrtest"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr/rtrtest"
 )
 
 // A cache that speaks only version 1, as StayRTR in the Loc-RIB lab does,

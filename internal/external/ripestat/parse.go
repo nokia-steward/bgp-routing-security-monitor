@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/external"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/external"
 )
 
 // lookingGlassResponse is the subset of the RIPEstat envelope we depend on.

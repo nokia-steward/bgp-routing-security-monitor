@@ -9,7 +9,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/whatif"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/whatif"
 	"github.com/spf13/cobra"
 )
 

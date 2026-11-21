@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/config"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/config"
 )
 
 // rtr_stale and rtr_data_regressed reach a rule's notification actions only,

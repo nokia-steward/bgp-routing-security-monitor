@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/metrics"
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/metrics"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // RAVEN mirrors the RFC 7606 error handling the monitored router applies to

@@ -3,7 +3,7 @@ package server
 import (
 	"testing"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/rtrtest"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr/rtrtest"
 )
 
 // #66 in serve: a VRP the cache announces twice counts once in the VRP

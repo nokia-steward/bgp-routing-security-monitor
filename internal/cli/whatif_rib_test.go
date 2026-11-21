@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/whatif"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/whatif"
 )
 
 // what-if sends --rib to the daemon, refuses a RIB it cannot simulate on

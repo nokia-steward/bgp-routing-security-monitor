@@ -13,9 +13,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/config"
-	"github.com/nokia/bgp-routing-security-monitor/internal/external"
-	"github.com/nokia/bgp-routing-security-monitor/internal/external/ripestat"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/config"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/external"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/external/ripestat"
 )
 
 // Verdicts for the global-visibility check. These are stable

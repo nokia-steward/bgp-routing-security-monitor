@@ -1,4 +1,4 @@
-module github.com/nokia/bgp-routing-security-monitor
+module github.com/nokia-steward/bgp-routing-security-monitor
 
 go 1.25.0
 

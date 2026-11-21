@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store/storetest"
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr/store/storetest"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // refStore is the reference the VRP store must match: the original

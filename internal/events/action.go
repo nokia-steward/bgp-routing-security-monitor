@@ -14,9 +14,9 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/external"
-	"github.com/nokia/bgp-routing-security-monitor/internal/flowspec"
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/external"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/flowspec"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // Action is the unit of work executed when a rule fires.

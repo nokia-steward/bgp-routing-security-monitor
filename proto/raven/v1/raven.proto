@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package raven.v1;
 
-option go_package = "github.com/srl-labs/raven/gen/raven/v1;ravenv1";
+option go_package = "github.com/nokia-steward/bgp-routing-security-monitor/gen/raven/v1;ravenv1";
 
 // ─── Services ───
 

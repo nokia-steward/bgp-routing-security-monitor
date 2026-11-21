@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/rtrtest"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr/rtrtest"
 )
 
 // eodPayload is an End of Data payload (after the header) for versions 1

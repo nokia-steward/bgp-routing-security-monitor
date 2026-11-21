@@ -5,7 +5,7 @@ import (
 	"math/rand/v2"
 	"net/netip"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // Synth is a deterministic synthetic VRP set and a set of route prefixes and

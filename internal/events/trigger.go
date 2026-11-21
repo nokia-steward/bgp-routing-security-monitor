@@ -4,7 +4,7 @@ import (
 	"net/netip"
 	"slices"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // Trigger evaluates an Event and reports whether the associated rule should fire.

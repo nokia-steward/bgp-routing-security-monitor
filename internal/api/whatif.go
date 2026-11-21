@@ -6,9 +6,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/aspa/recommender"
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store"
-	"github.com/nokia/bgp-routing-security-monitor/internal/whatif"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/aspa/recommender"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr/store"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/whatif"
 )
 
 type WhatIfHandler struct {

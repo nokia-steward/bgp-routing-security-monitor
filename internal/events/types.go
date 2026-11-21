@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/external"
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/external"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // EventType distinguishes what triggered the event.

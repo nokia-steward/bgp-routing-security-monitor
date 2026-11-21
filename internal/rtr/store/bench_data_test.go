@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store/storetest"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr/store/storetest"
 )
 
 // About the size of the global VRP set in 2026.
