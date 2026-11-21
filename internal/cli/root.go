@@ -65,7 +65,7 @@ func init() {
 	rootCmd.AddCommand(peersCmd)
 	rootCmd.AddCommand(routesCmd)
 	rootCmd.AddCommand(validateCmd)
-	rootCmd.AddCommand(watchCmd)
+	rootCmd.AddCommand(newWatchCmd(&addr))
 	rootCmd.AddCommand(newWhatIfCmd(&addr))
 	rootCmd.AddCommand(newASPACmd(&addr))
 	rootCmd.AddCommand(newAuditCmd(&addr))

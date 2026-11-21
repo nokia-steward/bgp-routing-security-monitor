@@ -205,6 +205,27 @@ All notable changes to RAVEN are recorded here.
   query the client sent.
 
 ### Changed
+- `raven watch` reconnects when its stream from the daemon ends or fails
+  (#81). It used to exit, with no message, when `raven serve` restarted
+  or the network dropped. Now:
+  - On a stream that ends or fails, and on a first connect that fails, it
+    prints the reason to stderr and retries, waiting 1 s, doubling to a
+    30 s cap, with jitter. A failure that repeats is printed once.
+  - When the stream is back it prints one stderr line with the gap's
+    length. Events sent during the gap are not replayed.
+  - The same filters are sent on every reconnect.
+  - A 4xx from the daemon, such as an invalid `--prefix`, is not retried:
+    watch prints it and exits 1.
+  - Ctrl+C, SIGTERM and SIGHUP exit 0 at once, also during a wait.
+  - stdout carries only events. The `watching for route events...` line
+    moved to stderr.
+  - The new `--once` flag keeps the old behaviour for scripts: no retry.
+    A stream that ends or fails, or a connect that fails, prints the
+    reason to stderr and exits 1. Only Ctrl+C or a shutdown signal exits 0.
+
+  **Upgrading:** a script that runs `raven watch` and waits for it to exit
+  when the daemon goes away must add `--once`. A script that reads the
+  banner from stdout must read it from stderr.
 - The anomaly detector in `raven rtr monitor` scores the time between
   serial changes, as the new statistic `serial_change_interval_ns`, in
   place of the time between polls, `interval_since_ns` (#75). How soon the
