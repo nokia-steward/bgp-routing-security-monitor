@@ -24,7 +24,8 @@ const (
 
 // A snapshot from the previous release loads, and every window comes back
 // as saved: same position, fullness and contents (so the same median and
-// MAD).
+// MAD). All but interval_since_ns, which the detector no longer scores
+// (#75): that one is dropped.
 func TestLoadV040SnapshotKeepsWindows(t *testing.T) {
 	raw, err := os.ReadFile(v040Snapshot)
 	if err != nil {
@@ -43,11 +44,17 @@ func TestLoadV040SnapshotKeepsWindows(t *testing.T) {
 		t.Fatalf("Load of a v0.4.0 snapshot: %v", err)
 	}
 	for cache, metrics := range file.Caches {
-		if len(metrics) != len(trackedMetrics) {
-			t.Errorf("%s: fixture has %d windows, want %d", cache, len(metrics), len(trackedMetrics))
+		if _, ok := metrics[MetricIntervalSince]; !ok || len(metrics) != len(v040Metrics())+1 {
+			t.Errorf("%s: fixture has %d windows, want interval_since_ns and the %d still scored", cache, len(metrics), len(v040Metrics()))
 		}
 		for metric, snap := range metrics {
 			w := d.window(cache, metric)
+			if metric == MetricIntervalSince {
+				if w != nil {
+					t.Errorf("%s/%s: restored, want it dropped", cache, metric)
+				}
+				continue
+			}
 			if w == nil {
 				t.Errorf("%s/%s: window not restored", cache, metric)
 				continue
@@ -100,7 +107,7 @@ func TestV040SnapshotFirstSyncWithoutTotals(t *testing.T) {
 
 	sawMADZero := false
 	for _, cache := range []string{v040Timer, v040Notify} {
-		for _, metric := range trackedMetrics {
+		for _, metric := range v040Metrics() {
 			med, mad, _ := d.window(cache, metric).medianMAD()
 			sawMADZero = sawMADZero || mad == 0
 			s := scale(metric, med, mad, Totals{})
@@ -126,28 +133,26 @@ func TestV040SnapshotFirstSyncWithoutTotals(t *testing.T) {
 	// each cache. No trip, and each value enters its window.
 	first := map[string]map[string]float64{
 		v040Timer: {
-			MetricIntervalSince: float64(600*time.Second + 2*time.Millisecond),
-			MetricSyncDuration:  float64(740 * time.Millisecond), // the Fort notify-driven sync
-			MetricVRPAnnounced:  2, MetricVRPWithdrawn: 1,
+			MetricSyncDuration: float64(740 * time.Millisecond), // the Fort notify-driven sync
+			MetricVRPAnnounced: 2, MetricVRPWithdrawn: 1,
 			MetricASPAAnnounced: 1, MetricASPAWithdrawn: 0,
 		},
 		v040Notify: {
-			MetricIntervalSince: float64(900 * time.Second),
-			MetricSyncDuration:  float64(12 * time.Second),
-			MetricVRPAnnounced:  1100, MetricVRPWithdrawn: 880,
+			MetricSyncDuration: float64(12 * time.Second),
+			MetricVRPAnnounced: 1100, MetricVRPWithdrawn: 880,
 			MetricASPAAnnounced: 1, MetricASPAWithdrawn: 0,
 		},
 	}
 	ts := time.Date(2026, 11, 11, 0, 0, 0, 0, time.UTC)
 	for cache, m := range first {
 		before := map[string]int{}
-		for _, metric := range trackedMetrics {
+		for _, metric := range v040Metrics() {
 			before[metric] = d.window(cache, metric).count()
 		}
 		if ev := d.ObserveSync(cache, ts, m); ev != nil {
 			t.Errorf("%s: first sync after loading the v0.4.0 snapshot tripped: %+v", cache, ev)
 		}
-		for _, metric := range trackedMetrics {
+		for _, metric := range v040Metrics() {
 			w := d.window(cache, metric)
 			want := min(before[metric]+1, w.cap)
 			if got := w.count(); got != want {
@@ -171,4 +176,17 @@ func TestV040SnapshotFirstSyncWithoutTotals(t *testing.T) {
 	if ev := d.ObserveSyncTotals(v040Timer, ts.Add(20*time.Minute), burst, totals); ev == nil || ev.Trigger != MetricVRPAnnounced {
 		t.Errorf("1,200-VRP burst after loading: %+v, want a trip on %s", ev, MetricVRPAnnounced)
 	}
+}
+
+// v040Metrics are the statistics the v0.4.0 fixture has windows for and the
+// detector still scores: all but serial_change_interval_ns, which it has
+// none for.
+func v040Metrics() []string {
+	var out []string
+	for _, m := range trackedMetrics {
+		if m != MetricSerialChangeInterval {
+			out = append(out, m)
+		}
+	}
+	return out
 }

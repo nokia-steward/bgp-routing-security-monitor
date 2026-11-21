@@ -40,18 +40,21 @@ func TestSeedBaseline(t *testing.T) {
 		t.Fatalf("FullSyncSkip = %d, want 1", summary.FullSyncSkip)
 	}
 
-	// All six tracked metrics get a window (every incremental sync supplies all
-	// six keys, defaulting to 0), each holding exactly the 4 incremental values;
-	// the full sync is excluded.
-	if len(summary.Fills) != len(trackedMetrics) {
-		t.Fatalf("fills = %d windows, want %d", len(summary.Fills), len(trackedMetrics))
+	// Every tracked metric but serial_change_interval_ns gets a window (every
+	// incremental sync supplies those keys, defaulting to 0), each holding
+	// exactly the 4 incremental values; the full sync is excluded. The
+	// records are from a RAVEN before serial_changed: no serial change is
+	// known, so no interval between them.
+	metrics := v040Metrics()
+	if len(summary.Fills) != len(metrics) {
+		t.Fatalf("fills = %d windows, want %d", len(summary.Fills), len(metrics))
 	}
 	for i, fill := range summary.Fills {
 		if fill.Cache != "localhost:3323" {
 			t.Fatalf("fill[%d].Cache = %q, want localhost:3323", i, fill.Cache)
 		}
-		if fill.Metric != trackedMetrics[i] {
-			t.Fatalf("fill[%d].Metric = %q, want %q (canonical order)", i, fill.Metric, trackedMetrics[i])
+		if fill.Metric != metrics[i] {
+			t.Fatalf("fill[%d].Metric = %q, want %q (canonical order)", i, fill.Metric, metrics[i])
 		}
 		if fill.Count != 4 || fill.Cap != DefaultAnomalyConfig().WindowSize {
 			t.Fatalf("fill[%d] (%s) = %d/%d, want 4/%d", i, fill.Metric, fill.Count, fill.Cap, DefaultAnomalyConfig().WindowSize)

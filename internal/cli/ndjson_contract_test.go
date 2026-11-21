@@ -21,8 +21,8 @@ import (
 const ndjsonSchemaPath = "../../schema/rtr-monitor-ndjson.v1.json"
 
 // warmDetector returns a detector whose windows for each cache are past warm-up
-// with a quiet baseline: a ~600 s cadence, ~100 ms syncs, a few VRPs per
-// sync. A sync of 1,200 VRPs is then a statistical anomaly.
+// with a quiet baseline: a serial change every ~600 s, ~100 ms syncs, a few
+// VRPs per sync (150 of each). A sync of 1,200 VRPs is then a statistical anomaly.
 func warmDetector(caches ...string) *telemetry.Detector {
 	d := telemetry.NewDetector(telemetry.DefaultAnomalyConfig())
 	for _, cache := range caches {
@@ -36,12 +36,12 @@ func warmCache(d *telemetry.Detector, cache string) {
 	base := time.Now().Add(-48 * time.Hour)
 	for i := range 150 {
 		d.ObserveSyncTotals(cache, base.Add(time.Duration(i)*10*time.Minute), map[string]float64{
-			telemetry.MetricIntervalSince: float64(600*time.Second + time.Duration(i%7)*time.Second),
-			telemetry.MetricSyncDuration:  float64(100*time.Millisecond + time.Duration(i%5)*time.Millisecond),
-			telemetry.MetricVRPAnnounced:  float64(i % 5),
-			telemetry.MetricVRPWithdrawn:  float64(i % 4),
-			telemetry.MetricASPAAnnounced: float64(i % 2),
-			telemetry.MetricASPAWithdrawn: 0,
+			telemetry.MetricSerialChangeInterval: float64(600*time.Second + time.Duration(i%7)*time.Second),
+			telemetry.MetricSyncDuration:         float64(100*time.Millisecond + time.Duration(i%5)*time.Millisecond),
+			telemetry.MetricVRPAnnounced:         float64(i % 5),
+			telemetry.MetricVRPWithdrawn:         float64(i % 4),
+			telemetry.MetricASPAAnnounced:        float64(i % 2),
+			telemetry.MetricASPAWithdrawn:        0,
 		}, telemetry.Totals{VRPs: 1250, ASPAs: 2})
 	}
 }
@@ -425,8 +425,8 @@ func TestNDJSONCorrelatedAnomalyMatchesContract(t *testing.T) {
 	rec := telemetry.NewRecorder(&buf, 1, nil)
 	rec.RecordAnomaly(&telemetry.AnomalyEvent{
 		Timestamp: time.Now(), Cache: "c:323", Category: "statistical", Trigger: "correlated", Severity: "medium",
-		ZScores: map[string]float64{telemetry.MetricIntervalSince: 4, telemetry.MetricSyncDuration: 4.2},
-		Raw: map[string]float64{telemetry.MetricIntervalSince: 1.2e12, telemetry.MetricSyncDuration: 3e10,
+		ZScores: map[string]float64{telemetry.MetricSerialChangeInterval: 4, telemetry.MetricSyncDuration: 4.2},
+		Raw: map[string]float64{telemetry.MetricSerialChangeInterval: 1.2e12, telemetry.MetricSyncDuration: 3e10,
 			telemetry.MetricVRPAnnounced: 3, telemetry.MetricVRPWithdrawn: 1, telemetry.MetricASPAAnnounced: 0, telemetry.MetricASPAWithdrawn: 0},
 	})
 	line := strings.TrimSpace(buf.String())
@@ -439,7 +439,7 @@ func TestNDJSONCorrelatedAnomalyMatchesContract(t *testing.T) {
 	if errs := schema.validate(v, schema.root, "correlated anomaly"); len(errs) != 0 {
 		t.Errorf("%v\n    %s", errs, line)
 	}
-	if v["trigger"] != "interval_since_ns+sync_duration_ns" {
+	if v["trigger"] != "serial_change_interval_ns+sync_duration_ns" {
 		t.Errorf("trigger %v, want the crossing metrics joined with +", v["trigger"])
 	}
 }

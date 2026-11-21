@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -72,25 +71,12 @@ func SeedBaseline(r io.Reader) (*Detector, *SeedSummary, error) {
 		}
 		summary.LinesProcessed++
 
-		if ev.EventType != EventSync {
-			continue
+		if sync, full := detector.replay(ev, []byte(line)); sync {
+			summary.SyncCount++
+			if full {
+				summary.FullSyncSkip++
+			}
 		}
-		summary.SyncCount++
-		normalizeLegacySync(&ev, []byte(line))
-
-		// Every sync, full ones too, shows whether the data changed: the
-		// gaps between changes teach the staleness threshold.
-		detector.data.Observe(ev)
-
-		// Full syncs report near the entire table as "announced"; they are not
-		// comparable to incremental deltas, so they never feed the windows.
-		// Mirrors the live monitor path (internal/cli/rtr_monitor.go).
-		if ev.SyncType == SyncTypeFull {
-			summary.FullSyncSkip++
-			continue
-		}
-
-		detector.ObserveSyncTotals(ev.Cache, ev.Timestamp, SyncMetrics(ev), TotalsOf(ev))
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, nil, fmt.Errorf("read input: %w", err)
@@ -104,31 +90,72 @@ func SeedBaseline(r io.Reader) (*Detector, *SeedSummary, error) {
 	return detector, summary, nil
 }
 
-// SeedGaps fills in the gap history of those of caches that have none (an
-// anomaly snapshot from before data_gaps, one without that cache, or no
-// snapshot) from the sync records in r, a raven rtr monitor NDJSON log: the
-// gaps a replay of them learns, by the same rules as the live tracker (its
-// --stale-threshold; data_fingerprint where present, the totals stand-in
-// before it). It does not read r when every cache has a history. It
-// returns the gaps seeded for each cache that had none, 0 included, and
-// how many lines it skipped as unreadable (a line cut short by a crash,
+// replay feeds one record of a raven rtr monitor log (line, as read) to d
+// as the live monitor does: a sync to the data tracker (full syncs too: they
+// show whether the data changed) and to the statistics (ObserveSyncEvent,
+// which evaluates no full sync), a connected or disconnected record to the
+// serial-change clock (ObserveSession). Anomalies are discarded. It reports
+// whether the record was a sync, and a full one.
+func (d *Detector) replay(ev SessionEvent, line []byte) (sync, full bool) {
+	switch ev.EventType {
+	case EventSync:
+		normalizeLegacySync(&ev, line)
+		d.data.Observe(ev)
+		d.ObserveSyncEvent(ev)
+		return true, ev.SyncType == SyncTypeFull
+	case EventConnected, EventDisconnected:
+		d.ObserveSession(ev)
+	}
+	return false, false
+}
+
+// LogSeed is what SeedFromLog seeded for one cache: its gaps between data
+// changes, if it had none (Gaps, and how many), and its
+// serial_change_interval_ns window, if it had none (Intervals, and how
+// many values). A count may be 0: the log held nothing for it.
+type LogSeed struct {
+	Gaps, Intervals         bool
+	GapCount, IntervalCount int
+}
+
+// SeedFromLog fills in, for those of caches the anomaly snapshot left
+// without them (one from an earlier release, one without that cache, or no
+// snapshot), the gap history (#80) and the serial_change_interval_ns window
+// (#75) from the records in r, a raven rtr monitor NDJSON log. They are what
+// a replay of the log learns, the replay raven rtr seed-baseline makes, by
+// the live rules (--stale-threshold; data_fingerprint where present, the
+// totals stand-in before it; serial changes within a session). The other
+// windows are left as the snapshot had them. It does not read r when every
+// cache has both. It returns, per cache that lacked either, what it seeded,
+// and how many lines it skipped as unreadable (a line cut short by a crash,
 // say). An error reading r seeds nothing.
-func (t *DataTracker) SeedGaps(r io.Reader, caches []string) (seeded map[string]int, skipped int, err error) {
-	t.mu.Lock()
-	threshold := t.threshold
-	var need []string
+func (d *Detector) SeedFromLog(r io.Reader, caches []string) (seeded map[string]LogSeed, skipped int, err error) {
+	need := map[string]LogSeed{}
+	d.data.mu.Lock()
+	threshold := d.data.threshold
 	for _, c := range caches {
-		if cd := t.caches[c]; (cd == nil || cd.gaps.count() == 0) && !slices.Contains(need, c) {
-			need = append(need, c)
+		if cd := d.data.caches[c]; cd == nil || cd.gaps.count() == 0 {
+			ls := need[c]
+			ls.Gaps = true
+			need[c] = ls
 		}
 	}
-	t.mu.Unlock()
+	d.data.mu.Unlock()
+	d.mu.Lock()
+	for _, c := range caches {
+		if w := d.windows[c][MetricSerialChangeInterval]; w == nil || w.count() == 0 {
+			ls := need[c]
+			ls.Intervals = true
+			need[c] = ls
+		}
+	}
+	d.mu.Unlock()
 	if len(need) == 0 {
 		return nil, 0, nil
 	}
 
-	replay := NewDataTracker()
-	replay.SetThreshold(threshold)
+	scratch := NewDetector(d.cfg)
+	scratch.data.SetThreshold(threshold)
 	br := bufio.NewReader(r)
 	for {
 		line, rerr := br.ReadBytes('\n')
@@ -137,12 +164,10 @@ func (t *DataTracker) SeedGaps(r io.Reader, caches []string) (seeded map[string]
 		}
 		if line = bytes.TrimSpace(line); len(line) > 0 {
 			var ev SessionEvent
-			switch {
-			case json.Unmarshal(line, &ev) != nil:
+			if json.Unmarshal(line, &ev) != nil {
 				skipped++
-			case ev.EventType == EventSync && slices.Contains(need, ev.Cache):
-				normalizeLegacySync(&ev, line)
-				replay.Observe(ev)
+			} else if _, ok := need[ev.Cache]; ok {
+				scratch.replay(ev, line)
 			}
 		}
 		if rerr != nil {
@@ -150,18 +175,39 @@ func (t *DataTracker) SeedGaps(r io.Reader, caches []string) (seeded map[string]
 		}
 	}
 
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	seeded = make(map[string]int, len(need))
-	for _, c := range need {
-		seeded[c] = 0
-		cd := t.cacheLocked(c)
-		if src := replay.caches[c]; src != nil && cd.gaps.count() == 0 {
-			cd.gaps.restore(src.gaps.snapshot())
-			seeded[c] = cd.gaps.count()
+	for c, ls := range need {
+		if ls.Gaps {
+			d.data.mu.Lock()
+			cd := d.data.cacheLocked(c)
+			if src := scratch.data.caches[c]; src != nil && cd.gaps.count() == 0 {
+				cd.gaps.restore(src.gaps.snapshot())
+			}
+			ls.GapCount = cd.gaps.count()
+			d.data.mu.Unlock()
 		}
+		if ls.Intervals {
+			d.mu.Lock()
+			if src := scratch.windows[c][MetricSerialChangeInterval]; src != nil && src.count() > 0 {
+				if d.windows[c] == nil {
+					d.windows[c] = make(map[string]*metricWindow, len(trackedMetrics))
+				}
+				w := d.windows[c][MetricSerialChangeInterval]
+				if w == nil {
+					w = newMetricWindow(d.cfg.WindowSize)
+					d.windows[c][MetricSerialChangeInterval] = w
+				}
+				if w.count() == 0 {
+					w.restore(src.snapshot())
+				}
+			}
+			if w := d.windows[c][MetricSerialChangeInterval]; w != nil {
+				ls.IntervalCount = w.count()
+			}
+			d.mu.Unlock()
+		}
+		need[c] = ls
 	}
-	return seeded, skipped, nil
+	return need, skipped, nil
 }
 
 // normalizeLegacySync fills in the net counts of an incremental sync record

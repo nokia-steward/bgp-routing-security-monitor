@@ -93,6 +93,7 @@ func handleRTREvent(rec *telemetry.Recorder, detector *telemetry.Detector, cmp *
 	}
 	if ev.EventType == telemetry.EventConnected || ev.EventType == telemetry.EventDisconnected {
 		detector.Data().Observe(ev) // the cache's connection state
+		detector.ObserveSession(ev) // a new session's serial changes
 	}
 	if ev.EventType != telemetry.EventSync {
 		return ok
@@ -342,7 +343,7 @@ change that reached every cache at once (upstream_change).`,
 				initAnomalyMetrics(cache)
 			}
 			configureDataTracker(detector.Data(), staleThreshold, set.cmp)
-			seedDataGaps(detector.Data(), logFile, caches, log)
+			seedFromLog(detector, logFile, caches, log)
 
 			// Consume the telemetry event channel: feed sync/structural events to
 			// the detector, emit any resulting anomaly as an NDJSON record on the
@@ -463,38 +464,45 @@ func configureDataTracker(t *telemetry.DataTracker, threshold time.Duration, cmp
 	}
 }
 
-// seedDataGaps fills in, before the first live sync, the gap history of
-// each cache the anomaly snapshot had none for (one from before data_gaps,
-// or no snapshot) from the sync records already in logFile (#80), and logs
-// how many gaps it seeded per cache. Without it such a cache learns from
-// scratch, and its first gaps can be mostly stalls. A missing or unreadable
-// log seeds nothing; it never blocks startup.
-func seedDataGaps(t *telemetry.DataTracker, logFile string, caches []string, log *slog.Logger) {
+// seedFromLog fills in, before the first live sync, what the anomaly
+// snapshot had none of for a cache (one from an earlier release, or no
+// snapshot) from the records already in logFile: the gap history (#80) and
+// the serial_change_interval_ns window (#75). It logs what it seeded per
+// cache. Without it such a cache learns from scratch, and its first gaps
+// can be mostly stalls. A missing or unreadable log seeds nothing; it
+// never blocks startup.
+func seedFromLog(d *telemetry.Detector, logFile string, caches []string, log *slog.Logger) {
 	f, err := os.Open(logFile)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			log.Warn("could not read the log file for gaps between data changes", "log_file", logFile, "error", err)
+			log.Warn("could not read the log file to seed baselines", "log_file", logFile, "error", err)
 		}
 		return
 	}
 	defer f.Close()
-	seeded, skipped, err := t.SeedGaps(f, caches)
+	seeded, skipped, err := d.SeedFromLog(f, caches)
 	if err != nil {
-		log.Warn("could not seed gaps between data changes from the log file", "log_file", logFile, "error", err)
+		log.Warn("could not seed baselines from the log file", "log_file", logFile, "error", err)
 		return
 	}
 	if skipped > 0 {
-		log.Warn("skipped unreadable lines of the log file while seeding gaps between data changes",
+		log.Warn("skipped unreadable lines of the log file while seeding baselines",
 			"log_file", logFile, "lines", skipped)
 	}
 	for _, cache := range caches {
-		n, ok := seeded[cache]
+		ls, ok := seeded[cache]
 		if !ok {
 			continue
 		}
-		thr, src, _ := t.Threshold(cache)
-		log.Info("seeded gaps between data changes from the log file", "cache", cache, "gaps", n,
-			"threshold", thr, "threshold_source", src, "log_file", logFile)
+		if ls.Gaps {
+			thr, src, _ := d.Data().Threshold(cache)
+			log.Info("seeded gaps between data changes from the log file", "cache", cache, "gaps", ls.GapCount,
+				"threshold", thr, "threshold_source", src, "log_file", logFile)
+		}
+		if ls.Intervals {
+			log.Info("seeded intervals between serial changes from the log file", "cache", cache,
+				"intervals", ls.IntervalCount, "log_file", logFile)
+		}
 	}
 }
 
@@ -515,9 +523,13 @@ func observeRTREvent(d *telemetry.Detector, ev telemetry.SessionEvent, log *slog
 		if ev.SyncType == telemetry.SyncTypeFull {
 			log.Info("full RTR resync, not evaluated by anomaly detector",
 				"cache", ev.Cache, "vrp_total", ev.VRPTotal, "aspa_total", ev.ASPATotal)
+			d.ObserveSyncEvent(ev) // restarts the serial-change clock; nil
 			return nil, false
 		}
-		return d.ObserveSyncTotals(ev.Cache, ev.Timestamp, telemetry.SyncMetrics(ev), telemetry.TotalsOf(ev)), true
+		// Polls are not scored by how soon they follow each other: the
+		// cache's End of Data refresh sets that (#75). The time between
+		// serial changes is (ObserveSyncEvent).
+		return d.ObserveSyncEvent(ev), true
 	case telemetry.EventReset:
 		return d.ObserveStructural(ev.Cache, "cache_reset", ev.Timestamp), false
 	case telemetry.EventCacheNotReady:

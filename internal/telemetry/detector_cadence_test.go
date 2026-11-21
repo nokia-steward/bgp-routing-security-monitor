@@ -27,12 +27,12 @@ func newCadence() *cadence {
 func (c *cadence) next(i int) map[string]float64 {
 	jitter := func(d time.Duration) float64 { return float64(time.Duration(c.rng.Int64N(int64(2*d+1))) - d) }
 	m := map[string]float64{
-		MetricIntervalSince: float64(600*time.Second) + jitter(5*time.Millisecond),
-		MetricSyncDuration:  float64(106*time.Millisecond) + jitter(2*time.Millisecond),
-		MetricVRPAnnounced:  float64(c.rng.IntN(4)),
-		MetricVRPWithdrawn:  float64(c.rng.IntN(4)),
-		MetricASPAAnnounced: 0,
-		MetricASPAWithdrawn: 0,
+		MetricSerialChangeInterval: float64(600*time.Second) + jitter(5*time.Millisecond),
+		MetricSyncDuration:         float64(106*time.Millisecond) + jitter(2*time.Millisecond),
+		MetricVRPAnnounced:         float64(c.rng.IntN(4)),
+		MetricVRPWithdrawn:         float64(c.rng.IntN(4)),
+		MetricASPAAnnounced:        0,
+		MetricASPAWithdrawn:        0,
 	}
 	switch {
 	case i%97 == 50:
@@ -68,7 +68,7 @@ func TestTimerCadenceNoTripsOverLongRun(t *testing.T) {
 	c.warm(t, d, 2000)
 	// The windows really are degenerate: the floor, not the MAD, sets the
 	// scale. Otherwise this test would not cover #59.
-	for _, metric := range []string{MetricIntervalSince, MetricSyncDuration} {
+	for _, metric := range []string{MetricSerialChangeInterval, MetricSyncDuration} {
 		med, mad, _ := d.window(testCache, metric).medianMAD()
 		if floor := minScale(metric, med, c.totals); mad >= floor/100 {
 			t.Fatalf("%s MAD %v is not near 0 (floor %v): the fixture does not exercise the floor", metric, mad, floor)
@@ -90,16 +90,17 @@ func TestTimerCadenceVRPBurstTrips(t *testing.T) {
 	}
 }
 
-// A real change of cadence (the cache now polled every 20 minutes, or a
-// stalled validator) is a high-severity trip on interval_since_ns; so is a
-// sync that takes many seconds instead of ~100 ms.
+// A serial that takes four times as long as usual to change (a validator
+// that stalled for a while) is a high-severity trip on
+// serial_change_interval_ns; so is a sync that takes many seconds instead of
+// ~100 ms. A serial change that takes twice as long, a validation run that
+// changed nothing, is not (#75): the floor is 25% of the median.
 func TestTimerCadenceRealChangesTrip(t *testing.T) {
 	for _, tc := range []struct {
 		metric string
 		value  time.Duration
 	}{
-		{MetricIntervalSince, 1200 * time.Second},
-		{MetricIntervalSince, 660 * time.Second}, // 10% late: ~6.7 scales
+		{MetricSerialChangeInterval, 2400 * time.Second}, // 4x: 8.1 scales
 		{MetricSyncDuration, 15 * time.Second},
 	} {
 		c := newCadence()
@@ -112,6 +113,14 @@ func TestTimerCadenceRealChangesTrip(t *testing.T) {
 			t.Errorf("%s = %v: %+v, want a high trip on it", tc.metric, tc.value, ev)
 		}
 	}
+	c := newCadence()
+	d := NewDetector(DefaultAnomalyConfig())
+	c.warm(t, d, 150)
+	m := c.next(150)
+	m[MetricSerialChangeInterval] = float64(1200 * time.Second) // 2x: 2.7 scales
+	if ev := d.ObserveSyncTotals(testCache, time.Unix(1_800_000_000, 0), m, c.totals); ev != nil {
+		t.Errorf("serial change after twice the usual interval: %+v, want no trip", ev)
+	}
 }
 
 // A window that has been exactly constant (MAD 0: a perfect timer, a count
@@ -122,9 +131,9 @@ func TestConstantWindowTripsOnLargeDeviation(t *testing.T) {
 	totals := Totals{VRPs: 1_000_000, ASPAs: 1_000}
 	base := time.Unix(1_700_000_000, 0)
 	constant := map[string]float64{
-		MetricIntervalSince: float64(600 * time.Second),
-		MetricSyncDuration:  float64(100 * time.Millisecond),
-		MetricVRPAnnounced:  0,
+		MetricSerialChangeInterval: float64(600 * time.Second),
+		MetricSyncDuration:         float64(100 * time.Millisecond),
+		MetricVRPAnnounced:         0,
 	}
 	for i := 0; i < 150; i++ {
 		if ev := d.ObserveSyncTotals(testCache, base.Add(time.Duration(i)*time.Minute), constant, totals); ev != nil {
@@ -132,17 +141,17 @@ func TestConstantWindowTripsOnLargeDeviation(t *testing.T) {
 		}
 	}
 	small := map[string]float64{
-		MetricIntervalSince: float64(603 * time.Second),
-		MetricSyncDuration:  float64(900 * time.Millisecond),
-		MetricVRPAnnounced:  40,
+		MetricSerialChangeInterval: float64(603 * time.Second),
+		MetricSyncDuration:         float64(900 * time.Millisecond),
+		MetricVRPAnnounced:         40,
 	}
 	if ev := d.ObserveSyncTotals(testCache, base.Add(time.Hour), small, totals); ev != nil {
 		t.Fatalf("small deviation from a constant window tripped: %+v", ev)
 	}
 	for metric, v := range map[string]float64{
-		MetricIntervalSince: float64(900 * time.Second),
-		MetricSyncDuration:  float64(20 * time.Second),
-		MetricVRPAnnounced:  5000,
+		MetricSerialChangeInterval: float64(2400 * time.Second),
+		MetricSyncDuration:         float64(20 * time.Second),
+		MetricVRPAnnounced:         5000,
 	} {
 		m := map[string]float64{}
 		for k, cv := range constant {

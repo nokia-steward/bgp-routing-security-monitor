@@ -205,6 +205,36 @@ All notable changes to RAVEN are recorded here.
   query the client sent.
 
 ### Changed
+- The anomaly detector in `raven rtr monitor` scores the time between
+  serial changes, as the new statistic `serial_change_interval_ns`, in
+  place of the time between polls, `interval_since_ns` (#75). How soon the
+  monitor polls again is up to the cache's End of Data refresh, and
+  Routinator 0.16 lowers it to 1 or 2 seconds before each validation run:
+  the polls that follow find the serial unchanged and said nothing about
+  the cache's data. Now:
+  - Only a `sync` that changed the serial is scored, against the previous
+    one in the same session. A session's first serial change has no
+    interval, so downtime is never scored.
+  - Its minimum spread is 25% of the median, where the timing statistics
+    have 1%. A Routinator validation run that changes nothing doubles the
+    interval. On server1's Routinator, 36 days of serial changes had a
+    median of 714 s and a MAD of 10 s; a 1% floor gave 73 high anomalies,
+    25% gives none. A hard trip needs about 3.2 times the usual interval.
+    A cache whose serial stops changing is reported by data staleness.
+  - The window is seeded from `--log-file` at startup when the
+    `--anomaly-snapshot` has none, as the gap history is (#80). The old
+    `interval_since_ns` window is dropped from the snapshot on load.
+  - `raven serve` runs no anomaly detector and is unchanged.
+
+  The `sync` record's `interval_since_ns` field is unchanged. In `anomaly`
+  records, `serial_change_interval_ns` is a new `trigger`, `z_scores` and
+  `raw` key, additive to NDJSON schema version 1; `interval_since_ns` is no
+  longer written there, and the schema keeps it for older files.
+
+  **Upgrading:** alerts or queries on `trigger` `interval_since_ns`, or on
+  `interval_since_ns` within a correlated `trigger` such as
+  `interval_since_ns+sync_duration_ns`, stop firing. Match
+  `serial_change_interval_ns` instead.
 - The Go module path is now
   `github.com/nokia-steward/bgp-routing-security-monitor`, matching the
   repository's new home (#63). Releases from this one on declare the new

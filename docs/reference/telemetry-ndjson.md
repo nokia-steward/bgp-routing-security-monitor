@@ -127,7 +127,7 @@ they are 0, and have no `vrp_added`, `vrp_removed`, `aspa_added`,
 | `aspa_added` | integer | always, 0 included | Customer ASes this cache came to hold a record for in this sync. A provider-set replacement is neither added nor removed |
 | `aspa_removed` | integer | always, 0 included | Customer ASes whose record this cache stopped holding in this sync |
 | `sync_duration_ns` | integer | always, 0 included | Nanoseconds from sending the query to receiving End of Data |
-| `interval_since_ns` | integer | absent on the first sync of the process | Nanoseconds since the previous sync's End of Data in this process, across sessions |
+| `interval_since_ns` | integer | absent on the first sync of the process | Nanoseconds since the previous sync's End of Data in this process, across sessions. The anomaly detector no longer scores it: the cache's End of Data refresh decides how soon the next poll comes (see [Statistics](#statistics)) |
 | `data_fingerprint` | string | always (absent in files from older releases) | The cache's data set (VRPs and ASPA records) after the sync, as an order-independent fingerprint: 32 hex digits, equal for equal sets whatever order or session they came in. See [Data staleness](#data-staleness) |
 
 ```json
@@ -310,13 +310,13 @@ metrics are far outside this cache's normal (statistical). Full syncs are never 
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
 | `category` | string | always | `structural` or `statistical` |
-| `trigger` | string | always | structural: `cache_reset` (a `reset`), `error_report` (an `error` from the cache), `protocol_error` (an `error` with `error_origin` `client`), `data_stale` (a `stale`) or `data_regressed` (a `data_regressed`). statistical: the metric that crossed the hard threshold, or, for a correlated trip, the metrics that crossed the soft threshold joined with `+` in the order of [the statistics](#statistics), e.g. `interval_since_ns+sync_duration_ns` |
+| `trigger` | string | always | structural: `cache_reset` (a `reset`), `error_report` (an `error` from the cache), `protocol_error` (an `error` with `error_origin` `client`), `data_stale` (a `stale`) or `data_regressed` (a `data_regressed`). statistical: the metric that crossed the hard threshold, or, for a correlated trip, the metrics that crossed the soft threshold joined with `+` in the order of [the statistics](#statistics), e.g. `serial_change_interval_ns+sync_duration_ns`. `interval_since_ns` appears only in files from RAVENs before it was replaced |
 | `severity` | string | always | `high`: every structural anomaly, and a statistical one past the hard threshold. `medium`: a correlated trip (two or more metrics past the soft threshold) |
 | `z_scores` | object | statistical | For each metric at or above its soft threshold, its modified z-score (unitless; the scale is the window's MAD with a minimum spread, see the detector). Keys are [statistics](#statistics) |
-| `raw` | object | statistical | Every metric's value in the flagged sync: nanoseconds for `*_ns`, counts otherwise. Keys are [statistics](#statistics) |
+| `raw` | object | statistical | Every metric's value in the flagged sync: nanoseconds for `*_ns`, counts otherwise. Keys are [statistics](#statistics). `serial_change_interval_ns` only on a sync that changed the serial, after an earlier one in the same session |
 
 ```json
-{"timestamp":"2026-11-11T21:06:49.097425939Z","cache":"rtr.example.net:3323","event_type":"anomaly","schema_version":1,"category":"statistical","trigger":"vrp_announced","severity":"high","z_scores":{"vrp_announced":808.0509999999999},"raw":{"aspa_announced":1,"aspa_withdrawn":1,"interval_since_ns":5717680,"sync_duration_ns":1897959,"vrp_announced":1200,"vrp_withdrawn":3}}
+{"timestamp":"2026-11-11T21:06:49.097425939Z","cache":"rtr.example.net:3323","event_type":"anomaly","schema_version":1,"category":"statistical","trigger":"vrp_announced","severity":"high","z_scores":{"vrp_announced":808.0509999999999},"raw":{"aspa_announced":1,"aspa_withdrawn":1,"sync_duration_ns":1897959,"vrp_announced":1200,"vrp_withdrawn":3}}
 {"timestamp":"2026-11-11T21:06:49.10142665Z","cache":"rtr.example.net:3323","event_type":"anomaly","schema_version":1,"category":"structural","trigger":"cache_reset","severity":"high"}
 ```
 
@@ -593,10 +593,27 @@ cache's `anomaly` record is written as well.
 ### Statistics
 
 The metrics the detector scores, as keys of `z_scores` and `raw` and in
-`trigger`, in this order: `interval_since_ns`, `sync_duration_ns`,
+`trigger`, in this order: `serial_change_interval_ns`, `sync_duration_ns`,
 `vrp_announced`, `vrp_withdrawn`, `aspa_announced`, `aspa_withdrawn`.
-`interval_since_ns` and `sync_duration_ns` are the `sync` fields of the
-same names. The four counts are the sync's net change: `vrp_added`,
+
+`serial_change_interval_ns` is the time between two `sync` records that
+changed the serial (`serial_changed` true) in the same session. A poll that
+finds the serial unchanged is not scored, however soon it follows the last:
+the cache sets the poll interval with its End of Data refresh, and
+Routinator 0.16 lowers that to 1 or 2 seconds before each validation run.
+The first serial change of a session (after a `connected` or `disconnected`
+record, or a full sync) has no interval, so a session's downtime is never
+scored. Its minimum spread is 25% of the window's median: a validation run
+that changes nothing doubles the interval, which is not an anomaly; about
+3.2 times the usual interval is a hard trip. A cache whose serial stops
+changing altogether raises no `serial_change_interval_ns` anomaly while it
+lasts; [data staleness](#data-staleness) reports it.
+
+RAVENs before `serial_change_interval_ns` scored `interval_since_ns`, the
+time between polls, instead, and their files have it in `trigger`,
+`z_scores` and `raw`. RAVEN no longer writes it there. The `sync` field
+of that name is unchanged. `sync_duration_ns` is the `sync` field of the
+same name. The four counts are the sync's net change: `vrp_added`,
 `vrp_removed`, `aspa_added` and `aspa_removed`, under the names they have
 always had (see [PDUs received and net change](#pdus-received-and-net-change)).
 A delta that duplicates records is reported as a `protocol_error`, not also
