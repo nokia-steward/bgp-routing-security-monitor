@@ -3,8 +3,8 @@ package aspa
 import (
 	"net/netip"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/config"
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/config"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // Selection is the verification procedure chosen for a route.

@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // mapIndex is the alternative design to vrpIndex's BART table, kept to

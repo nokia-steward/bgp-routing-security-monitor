@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // BenchmarkWithdrawSync applies an incremental RTR sync that withdraws 8,882

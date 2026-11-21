@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 func makeRoute(routerID, peerAddr string, peerASN uint32, prefix string, asPath []uint32, rov types.ROVState, aspa types.ASPAState) *types.Route {

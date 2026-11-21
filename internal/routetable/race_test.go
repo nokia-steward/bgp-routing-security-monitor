@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // Index queries must be safe to run while routes are withdrawn. A prefix's

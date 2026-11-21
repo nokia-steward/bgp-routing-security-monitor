@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // fillValidated puts n routes from peer, owned by session, in the table,

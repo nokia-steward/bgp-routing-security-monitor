@@ -6,7 +6,7 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/metrics"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/metrics"
 )
 
 // Correlate compares the local BMP-observed origin for prefix against what

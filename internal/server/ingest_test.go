@@ -10,8 +10,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/config"
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/config"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // gaugeValue reads a gauge from the default Prometheus registry. labels must

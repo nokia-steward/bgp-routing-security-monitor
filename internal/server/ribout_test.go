@@ -10,11 +10,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/api"
-	"github.com/nokia/bgp-routing-security-monitor/internal/buildinfo"
-	"github.com/nokia/bgp-routing-security-monitor/internal/config"
-	"github.com/nokia/bgp-routing-security-monitor/internal/events"
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/api"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/buildinfo"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/config"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/events"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // Adj-RIB-Out routes (RFC 8671) are stored apart from Adj-RIB-In: the same

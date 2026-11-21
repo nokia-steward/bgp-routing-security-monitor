@@ -4,7 +4,7 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // sharedRoutes builds routes for 25k prefixes, each carried by the same 4

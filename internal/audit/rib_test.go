@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // An audit covers one RIB: a route the router reports pre- and post-policy is

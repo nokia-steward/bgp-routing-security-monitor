@@ -3,9 +3,9 @@ package server
 import (
 	"slices"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/api"
-	ravenotel "github.com/nokia/bgp-routing-security-monitor/internal/otel"
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/api"
+	ravenotel "github.com/nokia-steward/bgp-routing-security-monitor/internal/otel"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // Verify at compile time that *Server implements ravenotel.StateReader.

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/config"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/config"
 )
 
 // bindForTest runs bindListeners with cfg and returns the log it wrote; the

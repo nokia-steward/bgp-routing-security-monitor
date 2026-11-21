@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/config"
-	"github.com/nokia/bgp-routing-security-monitor/internal/events"
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/rtrtest"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/config"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/events"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr/rtrtest"
 )
 
 // raven serve reports stale data and a return to earlier data: the data

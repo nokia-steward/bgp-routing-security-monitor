@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/rtrtest"
-	"github.com/nokia/bgp-routing-security-monitor/internal/telemetry"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr/rtrtest"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/telemetry"
 )
 
 // Replays of real Fort 1.7.0 deltas captured over RTR version 1 by Antonio

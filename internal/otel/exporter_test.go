@@ -8,7 +8,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
-	ravenotel "github.com/nokia/bgp-routing-security-monitor/internal/otel"
+	ravenotel "github.com/nokia-steward/bgp-routing-security-monitor/internal/otel"
 )
 
 // ── mock StateReader ──────────────────────────────────────────────────────────

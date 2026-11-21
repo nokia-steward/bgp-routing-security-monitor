@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr"
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/rtrtest"
-	"github.com/nokia/bgp-routing-security-monitor/internal/telemetry"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr/rtrtest"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/telemetry"
 )
 
 // ndjsonSchemaPath is the NDJSON contract (docs/reference/telemetry-ndjson.md).

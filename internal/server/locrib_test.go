@@ -12,10 +12,10 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/api"
-	"github.com/nokia/bgp-routing-security-monitor/internal/events"
-	"github.com/nokia/bgp-routing-security-monitor/internal/metrics"
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/api"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/events"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/metrics"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // locRIBRoute is a route of routerA's Loc-RIB: the zero peer address, the

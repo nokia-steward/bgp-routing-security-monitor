@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/external"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/external"
 )
 
 // Provider name reported in results and on the metrics `source` label.

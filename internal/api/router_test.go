@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/bmp"
-	"github.com/nokia/bgp-routing-security-monitor/internal/routetable"
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store"
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/bmp"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/routetable"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr/store"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // fakeRouters names routers as BMP Initiation would.

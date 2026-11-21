@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // Rule pairs a Trigger with one or more Actions and optional per-prefix rate-limiting.

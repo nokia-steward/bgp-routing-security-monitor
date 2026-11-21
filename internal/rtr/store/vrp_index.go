@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 
 	"github.com/gaissmai/bart"
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // covEntry is one distinct VRP prefix in the index: its own VRPs, in store

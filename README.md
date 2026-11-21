@@ -12,7 +12,7 @@ RAVEN is an open-source, lightweight, single-binary routing security observabili
 
 ```bash
 # Install
-go install github.com/nokia/bgp-routing-security-monitor/cmd/raven@latest
+go install github.com/nokia-steward/bgp-routing-security-monitor/cmd/raven@latest
 
 # Start RAVEN
 raven serve --config raven.yaml

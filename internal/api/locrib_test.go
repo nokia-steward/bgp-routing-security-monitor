@@ -9,11 +9,11 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/audit"
-	"github.com/nokia/bgp-routing-security-monitor/internal/bmp"
-	"github.com/nokia/bgp-routing-security-monitor/internal/routetable"
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store"
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/audit"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/bmp"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/routetable"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr/store"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // A Loc-RIB instance is listed with its peer type and table name, and its

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // Owner identifies who put a VRP or ASPA record in a store: one RTR cache's

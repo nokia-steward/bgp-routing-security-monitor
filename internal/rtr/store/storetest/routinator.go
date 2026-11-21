@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // RealVRPsPath is where a Routinator /json export can be placed to run the

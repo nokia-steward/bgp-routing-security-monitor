@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/telemetry"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/telemetry"
 )
 
 // newRTRSeedBaselineCmd builds "raven rtr seed-baseline": it replays a recorded

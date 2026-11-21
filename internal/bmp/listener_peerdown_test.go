@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // peerDownBody builds a BMP Peer Down message body (per-peer header plus a

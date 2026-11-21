@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/config"
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/config"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // generateBMPTestCert builds an ECDSA P-256 self-signed cert valid for 127.0.0.1

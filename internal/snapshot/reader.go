@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"time"
 
-	snapshotv1 "github.com/nokia/bgp-routing-security-monitor/internal/snapshot/v1"
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	snapshotv1 "github.com/nokia-steward/bgp-routing-security-monitor/internal/snapshot/v1"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // ErrVersionMismatch is returned when the snapshot was written by a

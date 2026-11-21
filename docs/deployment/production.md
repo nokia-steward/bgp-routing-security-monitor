@@ -19,7 +19,7 @@ flowchart LR
 On the monitoring host:
 
 ```bash
-go install github.com/nokia/bgp-routing-security-monitor/cmd/raven@latest
+go install github.com/nokia-steward/bgp-routing-security-monitor/cmd/raven@latest
 ```
 
 Or download a pre-built binary from the

@@ -5,8 +5,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store"
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr/store"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 func v(prefix string, maxLen uint8, asn uint32) types.VRP {

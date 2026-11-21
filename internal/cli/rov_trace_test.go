@@ -11,12 +11,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/api"
-	"github.com/nokia/bgp-routing-security-monitor/internal/routetable"
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store"
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
-	"github.com/nokia/bgp-routing-security-monitor/internal/validation"
-	"github.com/nokia/bgp-routing-security-monitor/internal/whatif"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/api"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/routetable"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr/store"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/validation"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/whatif"
 )
 
 // productionAPI is a real API server over the production report's route,

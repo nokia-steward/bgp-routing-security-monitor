@@ -7,10 +7,10 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/api"
-	"github.com/nokia/bgp-routing-security-monitor/internal/bmp/bmptest"
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/rtrtest"
-	"github.com/nokia/bgp-routing-security-monitor/internal/whatif"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/api"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/bmp/bmptest"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr/rtrtest"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/whatif"
 )
 
 // AS38016: br1.nyc reports its own address, 135.92.55.33, as a

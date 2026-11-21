@@ -7,9 +7,9 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/routetable"
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store"
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/routetable"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr/store"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // incFixture is an engine over a table whose routes are validated against

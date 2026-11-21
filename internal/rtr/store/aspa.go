@@ -5,7 +5,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // ASPARecord holds the validated provider set for a single customer ASN.

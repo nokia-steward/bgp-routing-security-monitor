@@ -15,10 +15,10 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr"
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/rtrtest"
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store"
-	"github.com/nokia/bgp-routing-security-monitor/internal/telemetry"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr/rtrtest"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr/store"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/telemetry"
 )
 
 // lockedBuffer is an io.Writer safe to read while another goroutine writes.

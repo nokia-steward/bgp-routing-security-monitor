@@ -3,7 +3,7 @@ package store
 import (
 	"fmt"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // Fingerprint identifies a set of VRPs and ASPA records independently of

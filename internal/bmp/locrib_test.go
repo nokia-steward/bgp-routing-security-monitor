@@ -11,7 +11,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // locRIBHeader is a Loc-RIB per-peer header (RFC 9069 §4.1): peer type 3, the

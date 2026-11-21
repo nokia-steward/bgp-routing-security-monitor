@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/config"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/config"
 )
 
 // syncBuffer is a bytes.Buffer safe for the concurrent writes slog makes

@@ -204,6 +204,18 @@ All notable changes to RAVEN are recorded here.
   query the client sent.
 
 ### Changed
+- The Go module path is now
+  `github.com/nokia-steward/bgp-routing-security-monitor`, matching the
+  repository's new home (#63). Releases from this one on declare the new
+  path, so `go install` from the old `github.com/nokia/...` path does not
+  pick them up. To upgrade, install from the new path:
+
+  ```bash
+  go install github.com/nokia-steward/bgp-routing-security-monitor/cmd/raven@latest
+  ```
+
+  Code that imports RAVEN packages must update its import paths to
+  `github.com/nokia-steward/bgp-routing-security-monitor/...`.
 - The anomaly detector's `vrp_announced`, `vrp_withdrawn`, `aspa_announced`
   and `aspa_withdrawn` statistics take the sync's net change (`vrp_added`,
   `vrp_removed`, `aspa_added`, `aspa_removed`) instead of the PDU counts. A

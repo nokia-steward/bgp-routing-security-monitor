@@ -16,10 +16,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/metrics"
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr"
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store"
-	"github.com/nokia/bgp-routing-security-monitor/internal/telemetry"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/metrics"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr/store"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/telemetry"
 )
 
 // rtrMonitorProtoVersion is the RTR protocol version the monitor starts with

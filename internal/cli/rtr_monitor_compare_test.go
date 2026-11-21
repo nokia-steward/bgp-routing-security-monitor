@@ -16,8 +16,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/rtrtest"
-	"github.com/nokia/bgp-routing-security-monitor/internal/telemetry"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr/rtrtest"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/telemetry"
 )
 
 // testSettle is the settle window the comparison tests set with

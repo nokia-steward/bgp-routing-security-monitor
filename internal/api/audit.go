@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/audit"
-	"github.com/nokia/bgp-routing-security-monitor/internal/routetable"
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/audit"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/routetable"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // AuditHandler serves the router security posture audit endpoint.

@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/routetable"
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/routetable"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // Simulator runs what-if policy simulations against the live Route Table.

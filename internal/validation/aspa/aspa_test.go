@@ -3,8 +3,8 @@ package aspa
 import (
 	"testing"
 
-	"github.com/nokia/bgp-routing-security-monitor/internal/rtr/store"
-	"github.com/nokia/bgp-routing-security-monitor/internal/types"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/rtr/store"
+	"github.com/nokia-steward/bgp-routing-security-monitor/internal/types"
 )
 
 // Section references are to draft-ietf-sidrops-aspa-verification-24.
