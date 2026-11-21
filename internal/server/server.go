@@ -250,9 +250,15 @@ func (s *Server) SetDemoMode(enabled bool) {
 	s.demoMode = enabled
 }
 
-// Run starts all subsystems and blocks until interrupted.
+// ShutdownSignals are the signals raven serve and raven rtr monitor shut
+// down cleanly on, all through the same path: SIGINT, SIGTERM and SIGHUP.
+// SIGHUP is what a closed terminal, a lost SSH session or tmux
+// kill-session sends, and Go's default for it is to exit at once (#82).
+var ShutdownSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
+
+// Run starts all subsystems and blocks until interrupted (ShutdownSignals).
 func (s *Server) Run() error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), ShutdownSignals...)
 	defer stop()
 	return s.RunContext(ctx)
 }

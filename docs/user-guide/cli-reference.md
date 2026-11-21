@@ -1339,7 +1339,10 @@ raven rtr monitor --anomaly-snapshot ~/.raven/anomaly-baseline.json --prometheus
 raven rtr monitor --cache routinator.example.net:3323 --cache fort.example.net:323 --cache rpki-client.example.net:8282
 ```
 
-Runs in the foreground until you press Ctrl+C.
+Runs in the foreground until you press Ctrl+C, or until SIGTERM or SIGHUP (a
+closed terminal or SSH session, `tmux kill-session`). Each shuts it down the
+same way: a `disconnected` record (`shutdown`) per cache, and a final save of
+`--anomaly-snapshot`.
 
 **Output:** the NDJSON written to `--log-file` is a versioned contract: every
 record type, field and value is documented in
@@ -1359,7 +1362,7 @@ the compatibility policy. Build parsers against that page.
 | `--rtr-version` | `auto` | RTR protocol version. `auto` starts at 2 and falls back one version at a time (2, 1, 0) when the cache rejects one with Error Report code 4 or closes the connection before answering; `0`, `1` or `2` pins the session to that version, with no fallback and no re-probe |
 | `--prometheus` | — | Prometheus listen address (e.g. `:9595`); empty disables the metrics endpoint |
 | `--anomaly-snapshot` | `~/.raven/anomaly-baseline.json` | Path to the adaptive anomaly-detector baseline snapshot (JSON) |
-| `--stale-threshold` | `0` (learned) | How long a cache's data may go without changing before it is reported `stale`. Learned per cache: max(4 x median, 3 x 90th percentile of its gaps between data changes, `30m`), and `4h` until 20 gaps are known |
+| `--stale-threshold` | `0` (learned) | How long a cache's data may go without changing before it is reported `stale`. Learned per cache: max(4 x median, 3 x 90th percentile of its gaps between data changes, `30m`), and `4h` until 20 gaps are known, at most `4h` until 100 |
 
 **Anomaly detection:**
 
@@ -1410,7 +1413,10 @@ whether each cache's data changes, whatever its serial:
 - `stale` says whether the cache was `connected` (serving frozen data) or
   `disconnected` (unreachable while its last data ages), as `cache_state`;
   `stale_resolved` says how it ended, as `resolution`.
-- The learned gaps are saved in `--anomaly-snapshot`.
+- The learned gaps are saved in `--anomaly-snapshot`. A cache it holds none
+  for (a snapshot from an earlier release, or none) has them rebuilt at
+  startup from the `sync` records already in `--log-file`; the log line
+  `seeded gaps between data changes from the log file` gives how many.
 
 See [Data Staleness](../reference/data-staleness.md).
 
@@ -1505,7 +1511,8 @@ output: /home/user/.raven/anomaly-baseline.json
 
 Every sync record, full syncs included, also teaches the staleness
 threshold: the last line gives each cache's learned gaps between data changes
-and the threshold they give (`default`, 4h, below 20 gaps).
+and the threshold they give (`default`, 4h, below 20 gaps, and below 100
+when the learned one is above 4h).
 
 A window that reaches its cap (500 samples) reports `(full)` — the detector has
 a complete baseline for that metric. Partially-filled windows still work but

@@ -52,7 +52,7 @@ func learn(tr *DataTracker, cache string, n int, gaps ...time.Duration) (time.Ti
 }
 
 // The threshold is max(4 x median, 3 x p90, 30m) of the gaps, once 20 are
-// known.
+// known (above 4h, once StaleBoundGaps are).
 func TestStaleThresholdLearned(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -71,10 +71,10 @@ func TestStaleThresholdLearned(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tr := NewDataTracker()
-			learn(tr, "c", 60, tc.gaps...)
+			learn(tr, "c", StaleBoundGaps, tc.gaps...)
 			got, src, n := tr.Threshold("c")
-			if got != tc.want || src != ThresholdLearned || n != 60 {
-				t.Errorf("threshold %v (%s, %d gaps), want %v (learned, 60 gaps)", got, src, n, tc.want)
+			if got != tc.want || src != ThresholdLearned || n != StaleBoundGaps {
+				t.Errorf("threshold %v (%s, %d gaps), want %v (learned, %d gaps)", got, src, n, tc.want, StaleBoundGaps)
 			}
 		})
 	}
@@ -110,18 +110,90 @@ func TestStaleThresholdColdStart(t *testing.T) {
 	}
 }
 
-// A cache whose data changes once a day is not stale at 6 hours.
+// A cache whose data changes once a day is not stale at 6 hours, once
+// StaleBoundGaps gaps are known.
 func TestDailyCacheNotStaleAtSixHours(t *testing.T) {
 	tr := NewDataTracker()
-	at, serial := learn(tr, "c", 30, 24*time.Hour)
+	at, serial := learn(tr, "c", StaleBoundGaps, 24*time.Hour)
+	set := fmt.Sprintf("set-%d", StaleBoundGaps)
 	for h := 1; h <= 6; h++ {
-		if des := tr.Observe(syncAt("c", at.Add(time.Duration(h)*time.Hour), serial, "set-30")); len(des) != 0 {
+		if des := tr.Observe(syncAt("c", at.Add(time.Duration(h)*time.Hour), serial, set)); len(des) != 0 {
 			t.Fatalf("daily cache, %dh without a change: %v", h, kinds(des))
 		}
 	}
 	if st, _ := tr.Status("c", at.Add(6*time.Hour)); st.Stale || st.Age != 6*time.Hour {
 		t.Errorf("status %+v, want 6h old, not stale", st)
 	}
+}
+
+// #80: a short history must not widen the threshold. Until StaleBoundGaps
+// gaps are known, a learned threshold above the 4-hour default is the
+// default (source default); one below it is used. A cache that changes
+// about every 2 hours learns its own, above 4h, at StaleBoundGaps.
+func TestStaleThresholdShortHistoryBounded(t *testing.T) {
+	t.Run("slow cache", func(t *testing.T) {
+		tr := NewDataTracker()
+		// 1h45m to 2h15m: median 2h (8h), p90 2h10m (6h30m).
+		gaps := []time.Duration{105 * time.Minute, 115 * time.Minute, 2 * time.Hour, 125 * time.Minute, 135 * time.Minute}
+		at, serial := learn(tr, "c", 1, gaps...)
+		for n := 1; n < StaleBoundGaps; n++ {
+			if thr, src, got := tr.Threshold("c"); got != n || thr != DefaultStaleThreshold || src != ThresholdDefault {
+				t.Fatalf("%d gaps: %v (%s, %d gaps), want 4h (default)", n, thr, src, got)
+			}
+			at = at.Add(gaps[n%len(gaps)])
+			serial++
+			tr.Observe(syncAt("c", at, serial, fmt.Sprintf("set-%d", serial)))
+		}
+		thr, src, n := tr.Threshold("c")
+		if n != StaleBoundGaps || src != ThresholdLearned || thr != 8*time.Hour {
+			t.Fatalf("%d gaps: %v (%s), want 8h learned", n, thr, src)
+		}
+		// 6 hours without a change: not stale now.
+		if des := tr.Observe(syncAt("c", at.Add(6*time.Hour), serial, fmt.Sprintf("set-%d", serial))); len(des) != 0 {
+			t.Errorf("slow cache, 6h without a change past %d gaps: %v", StaleBoundGaps, kinds(des))
+		}
+	})
+	t.Run("stalls first", func(t *testing.T) {
+		// As on Cloudflare after an upgrade with no gap history: the first
+		// gaps hold stalls (here 1 in 5, of 3h), the rest are 10 minutes.
+		tr := NewDataTracker()
+		at := t0
+		tr.Observe(syncAt("c", at, 0, "set-0"))
+		for i := 1; i <= StaleBoundGaps+10; i++ {
+			gap := 10 * time.Minute
+			if i <= 40 && i%5 == 0 {
+				gap = 3 * time.Hour
+			}
+			at = at.Add(gap)
+			tr.Observe(syncAt("c", at, uint32(i), fmt.Sprintf("set-%d", i)))
+			thr, src, n := tr.Threshold("c")
+			if n < StaleBoundGaps && thr > DefaultStaleThreshold {
+				t.Fatalf("%d gaps: %v (%s), above the 4h default before %d gaps", n, thr, src, StaleBoundGaps)
+			}
+			// Unbounded, 40 gaps with 8 stalls would learn 9h.
+			if n == 40 && (thr != DefaultStaleThreshold || src != ThresholdDefault) {
+				t.Fatalf("40 gaps, 8 of them stalls: %v (%s), want 4h (default)", thr, src)
+			}
+		}
+		if thr, src, _ := tr.Threshold("c"); src != ThresholdLearned || thr >= DefaultStaleThreshold {
+			t.Errorf("after %d gaps: %v (%s), want learned below 4h", StaleBoundGaps+10, thr, src)
+		}
+	})
+	t.Run("below the default", func(t *testing.T) {
+		tr := NewDataTracker()
+		learn(tr, "c", StaleMinGaps, 15*time.Minute)
+		if thr, src, _ := tr.Threshold("c"); thr != time.Hour || src != ThresholdLearned {
+			t.Errorf("20 gaps of 15m: %v (%s), want 1h learned", thr, src)
+		}
+	})
+	t.Run("configured", func(t *testing.T) {
+		tr := NewDataTracker()
+		tr.SetThreshold(6 * time.Hour)
+		learn(tr, "c", StaleMinGaps, 2*time.Hour)
+		if thr, src, _ := tr.Threshold("c"); thr != 6*time.Hour || src != ThresholdConfigured {
+			t.Errorf("--stale-threshold 6h: %v (%s)", thr, src)
+		}
+	})
 }
 
 // One stale record per episode, never one per sync; resolved by a change,

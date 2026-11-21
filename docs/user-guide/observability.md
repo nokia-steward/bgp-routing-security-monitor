@@ -190,8 +190,19 @@ the cache's set of VRPs and ASPA records:
   data) or `disconnected` (it cannot be reached while its last data ages),
   as the episode began, and 0 on the other. The threshold is learned
   from its own gaps between data changes: max(4 x median, 3 x 90th
-  percentile, 30m), or 4h until 20 gaps are known. `rtr.stale-threshold`
-  overrides it.
+  percentile, 30m), or 4h until 20 gaps are known (at most 4h until
+  100). `rtr.stale-threshold` (`--stale-threshold` in `raven rtr
+  monitor`) overrides it.
+- `threshold_source` (on the `rtr_stale` webhook, and on the `raven rtr
+  monitor` `stale` record) says where the threshold came from. `default` is
+  the 4h default: with fewer than 20 gaps, and also when a learned threshold
+  above 4h is held at 4h because fewer than 100 gaps are known. The `stale`
+  record's `gaps_learned` gives how many gaps were known; the webhook has no
+  such field.
+- A cache whose data normally goes several hours unchanged should have
+  `rtr.stale-threshold` (`--stale-threshold`) set until it has 100 gaps.
+  Otherwise it is reported stale whenever a normal gap runs past 4h during
+  that warm-up.
 - `raven_rtr_data_regressions_total` counts returns to an earlier set.
 
 RAVEN also logs a WARN line when an episode starts and on each return, and

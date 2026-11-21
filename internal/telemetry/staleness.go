@@ -29,7 +29,8 @@ import (
 // DataGapWindow) and learns from them how long this cache's data normally
 // goes without a change. The data is stale when it has gone longer than
 // max(4 x median gap, 3 x 90th percentile gap, StaleThresholdFloor); with
-// fewer than StaleMinGaps gaps known, DefaultStaleThreshold. The age is
+// fewer than StaleMinGaps gaps known, DefaultStaleThreshold, and with fewer
+// than StaleBoundGaps at most DefaultStaleThreshold. The age is
 // checked at every sync (Observe) and between syncs (Tick), so a cache that
 // stops syncing goes stale too.
 //
@@ -53,6 +54,15 @@ const (
 	// StaleMinGaps is how many gaps between data changes the threshold is
 	// learned from, at least.
 	StaleMinGaps = 20
+	// StaleBoundGaps is how many gaps a learned threshold needs before it
+	// may exceed DefaultStaleThreshold. A short history can be mostly
+	// stalls: on ASPA Explorer's Cloudflare records from 15 November 2026,
+	// a history begun empty learned 9h17m at 20 gaps and stayed above the
+	// default (4h27m) up to 59. A learned threshold
+	// is above the default only if more than one gap in ten is over 80
+	// minutes (3 x p90) or half are over an hour (4 x median); at 100
+	// gaps, ten stalls are not enough.
+	StaleBoundGaps = 100
 	// DataGapWindow is how many gaps between data changes are kept per
 	// cache: about five days at a change every 15 minutes.
 	DataGapWindow = 500
@@ -73,7 +83,8 @@ type ThresholdSource string
 const (
 	// ThresholdLearned is learned from this cache's gaps between changes.
 	ThresholdLearned ThresholdSource = "learned"
-	// ThresholdDefault is DefaultStaleThreshold, before StaleMinGaps gaps.
+	// ThresholdDefault is DefaultStaleThreshold: before StaleMinGaps gaps,
+	// or before StaleBoundGaps when the learned threshold is above it.
 	ThresholdDefault ThresholdSource = "default"
 	// ThresholdConfigured is --stale-threshold (rtr.stale-threshold).
 	ThresholdConfigured ThresholdSource = "configured"
@@ -260,7 +271,9 @@ func (t *DataTracker) cacheLocked(name string) *cacheData {
 }
 
 // thresholdLocked returns cd's staleness threshold, where it came from and
-// how many gaps it knows.
+// how many gaps it knows. Below StaleBoundGaps gaps a learned threshold
+// above DefaultStaleThreshold is DefaultStaleThreshold, as the default:
+// a short history of stalls must not widen it.
 func (t *DataTracker) thresholdLocked(cd *cacheData) (time.Duration, ThresholdSource, int) {
 	n := cd.gaps.count()
 	if t.threshold > 0 {
@@ -272,8 +285,11 @@ func (t *DataTracker) thresholdLocked(cd *cacheData) (time.Duration, ThresholdSo
 	vals := cd.gaps.sorted()
 	median := medianOfSorted(vals)
 	p90 := quantileOfSorted(vals, 0.9)
-	thr := math.Max(math.Max(staleMedianFactor*median, staleP90Factor*p90), float64(StaleThresholdFloor))
-	return time.Duration(thr), ThresholdLearned, n
+	thr := time.Duration(math.Max(math.Max(staleMedianFactor*median, staleP90Factor*p90), float64(StaleThresholdFloor)))
+	if n < StaleBoundGaps && thr > DefaultStaleThreshold {
+		return DefaultStaleThreshold, ThresholdDefault, n
+	}
+	return thr, ThresholdLearned, n
 }
 
 // quantileOfSorted is the nearest-rank q-quantile of a sorted, non-empty

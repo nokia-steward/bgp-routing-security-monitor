@@ -2,9 +2,12 @@ package telemetry
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -99,6 +102,66 @@ func SeedBaseline(r io.Reader) (*Detector, *SeedSummary, error) {
 		summary.DataGaps = append(summary.DataGaps, SeedDataGaps{Cache: cache, Gaps: n, Threshold: thr, Source: src})
 	}
 	return detector, summary, nil
+}
+
+// SeedGaps fills in the gap history of those of caches that have none (an
+// anomaly snapshot from before data_gaps, one without that cache, or no
+// snapshot) from the sync records in r, a raven rtr monitor NDJSON log: the
+// gaps a replay of them learns, by the same rules as the live tracker (its
+// --stale-threshold; data_fingerprint where present, the totals stand-in
+// before it). It does not read r when every cache has a history. It
+// returns the gaps seeded for each cache that had none, 0 included, and
+// how many lines it skipped as unreadable (a line cut short by a crash,
+// say). An error reading r seeds nothing.
+func (t *DataTracker) SeedGaps(r io.Reader, caches []string) (seeded map[string]int, skipped int, err error) {
+	t.mu.Lock()
+	threshold := t.threshold
+	var need []string
+	for _, c := range caches {
+		if cd := t.caches[c]; (cd == nil || cd.gaps.count() == 0) && !slices.Contains(need, c) {
+			need = append(need, c)
+		}
+	}
+	t.mu.Unlock()
+	if len(need) == 0 {
+		return nil, 0, nil
+	}
+
+	replay := NewDataTracker()
+	replay.SetThreshold(threshold)
+	br := bufio.NewReader(r)
+	for {
+		line, rerr := br.ReadBytes('\n')
+		if rerr != nil && !errors.Is(rerr, io.EOF) {
+			return nil, 0, fmt.Errorf("read log: %w", rerr)
+		}
+		if line = bytes.TrimSpace(line); len(line) > 0 {
+			var ev SessionEvent
+			switch {
+			case json.Unmarshal(line, &ev) != nil:
+				skipped++
+			case ev.EventType == EventSync && slices.Contains(need, ev.Cache):
+				normalizeLegacySync(&ev, line)
+				replay.Observe(ev)
+			}
+		}
+		if rerr != nil {
+			break
+		}
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	seeded = make(map[string]int, len(need))
+	for _, c := range need {
+		seeded[c] = 0
+		cd := t.cacheLocked(c)
+		if src := replay.caches[c]; src != nil && cd.gaps.count() == 0 {
+			cd.gaps.restore(src.gaps.snapshot())
+			seeded[c] = cd.gaps.count()
+		}
+	}
+	return seeded, skipped, nil
 }
 
 // normalizeLegacySync fills in the net counts of an incremental sync record
