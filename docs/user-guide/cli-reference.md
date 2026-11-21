@@ -666,6 +666,7 @@ press Ctrl+C.
 
 ```bash
 raven watch
+raven watch --once --posture origin-invalid   # in a script: exit when the stream ends
 raven watch --posture path-suspect
 raven watch --router edge1 --posture origin-invalid
 raven watch --peer 198.51.100.1
@@ -684,17 +685,53 @@ raven watch --rib loc-rib --posture origin-invalid
 | `--posture` | Only stream routes with this posture |
 | `--afi` | Only stream routes of this address family: `ipv4` or `ipv6`. Default: both |
 | `--rib` | Only stream routes of these RIBs, comma-separated, with the same names as [`raven routes --rib`](#raven-routes). Default: the default view, `adj-rib-in-pre` and `loc-rib` |
+| `--once` | Do not reconnect. Exit 1, with the reason on stderr, when the stream ends or fails or the first connect fails |
 
 Every filter you give applies, as with `raven routes`. Earlier releases sent
 only `--posture` to the daemon and ignored the other filters. Without
 `--rib`, the stream carries the default view; v0.4.0 streamed every RIB,
 Adj-RIB-Out included, when no RIB was given.
 
-**Example output:**
+### Reconnecting
+
+When the stream from the daemon ends or fails (`raven serve` restarted, the
+network dropped), or the first connect fails, `raven watch` keeps running:
+
+- It prints the reason to stderr and tries again after 1 s. Each failed
+  try doubles the wait, up to 30 s, less a little jitter so that many
+  watchers do not all reconnect at the same moment. A failure that repeats
+  is printed once.
+- When the stream is back it prints one stderr line with the gap's length.
+  Events sent during the gap are not replayed: run
+  [`raven routes`](#raven-routes) to see the current state.
+- It sends the same filters on every reconnect.
+- A daemon that refuses the watch with a 4xx, such as an invalid
+  `--prefix`, would refuse it again, so `raven watch` prints the answer
+  and exits 1.
+
+```text
+raven watch: stream ended: the daemon closed it; reconnecting
+raven watch: reconnect failed: connect to daemon at localhost:11020: Get "http://localhost:11020/api/v1/watch": dial tcp [::1]:11020: connect: connection refused; retrying
+raven watch: reconnected to localhost:11020 after 4.2s; events during the gap were not replayed
+```
+
+Ctrl+C, SIGTERM and SIGHUP exit at once with status 0, also while
+`raven watch` waits to reconnect.
+
+stdout carries only events, one line each. Everything else, including the
+`watching for route events...` line, goes to stderr, so
+`raven watch > events.log` holds events alone.
+
+With `--once`, `raven watch` does not reconnect. A stream that ends or
+fails, or a first connect that fails, prints the reason to stderr and
+exits 1, so a script can tell that the daemon went away. Only Ctrl+C or a
+shutdown signal exits 0. Before this release, `raven watch` always
+behaved like this, and exited when the daemon restarted.
+
+**Example output** (stderr, then stdout):
 
 ```text
 watching for route events... (Ctrl+C to stop)
-
 [path-suspect] 203.0.113.0/24 via 198.51.100.1 rib:adj-rib-in-pre origin:AS64502 AS_PATH:[64500 64501 64502] rov:Valid ASPA:Invalid hop(64501→64500) posture:path-suspect
 [origin-invalid] 2001:db8:ffff::1/128 via loc-rib rib:loc-rib origin:AS64499 AS_PATH:[] rov:Invalid ASPA:Unknown posture:origin-invalid
 ```

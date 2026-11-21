@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // runCLI runs the raven CLI with args against srv and returns its stdout.
@@ -31,6 +33,25 @@ func runCLI(t *testing.T, srv *httptest.Server, args ...string) string {
 	return string(out)
 }
 
+// runWatchOnce runs raven watch --once with args against srv, whose stream
+// ends, and returns its stdout. Since #81 that end is an error.
+func runWatchOnce(t *testing.T, srv *httptest.Server, args ...string) string {
+	t.Helper()
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	cmd := newWatchCmd(&addr)
+	var stdout, stderr strings.Builder
+	cmd.SetArgs(append(args, "--once"))
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	// Bounded, so a --once that reconnects fails here instead of hanging.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := cmd.ExecuteContext(ctx); err == nil || !strings.Contains(err.Error(), "ended") {
+		t.Fatalf("raven watch --once %v: %v, want the stream-ended error", args, err)
+	}
+	return stdout.String()
+}
+
 // raven watch sends every filter it is given; it used to send only --posture.
 func TestWatchSendsAllFilters(t *testing.T) {
 	var got url.Values
@@ -38,14 +59,13 @@ func TestWatchSendsAllFilters(t *testing.T) {
 		got = r.URL.Query()
 	}))
 	defer srv.Close()
-	runCLI(t, srv, "watch", "--prefix", "1.1.1.0/24", "--origin-asn", "13335",
+	runWatchOnce(t, srv, "--prefix", "1.1.1.0/24", "--origin-asn", "13335",
 		"--peer", "80.81.194.180", "--posture", "secured", "--router", "br1.nyc", "--rib", "loc-rib")
 	want := url.Values{"prefix": {"1.1.1.0/24"}, "origin-asn": {"13335"}, "peer": {"80.81.194.180"},
 		"posture": {"secured"}, "router": {"br1.nyc"}, "rib": {"loc-rib"}}
 	if got.Encode() != want.Encode() {
 		t.Errorf("watch query = %q, want %q", got.Encode(), want.Encode())
 	}
-	runCLI(t, srv, "watch", "--prefix", "", "--origin-asn", "0", "--peer", "", "--posture", "", "--router", "", "--rib", "")
 }
 
 // raven watch shows each route's ASPA state and, for an ASPA Invalid, the
@@ -59,18 +79,18 @@ func TestWatchShowsFailingHop(t *testing.T) {
 			`"as_path":[174,13335],"rov":"Valid","aspa":"Unknown","posture":"origin-only"}`+"\n\n")
 	}))
 	defer srv.Close()
-	out := runCLI(t, srv, "watch")
+	out := runWatchOnce(t, srv)
 	want := []string{
 		"[path-suspect] 104.16.0.0/13 via 192.0.2.1 origin:AS13335 AS_PATH:[1031 262504 53072 7738 13335] " +
 			"rov:NotFound ASPA:Invalid hop(53072→262504) posture:path-suspect",
 		"[origin-only] 1.1.1.0/24 via 192.0.2.1 origin:AS13335 AS_PATH:[174 13335] " +
 			"rov:Valid ASPA:Unknown posture:origin-only",
 	}
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) < len(want) {
+	// stdout is the events alone: the banner went to stderr (#81).
+	got := strings.Split(strings.TrimSpace(out), "\n")
+	if len(got) != len(want) {
 		t.Fatalf("watch output:\n%s", out)
 	}
-	got := lines[len(lines)-len(want):]
 	for i := range want {
 		if got[i] != want[i] {
 			t.Errorf("watch line %d:\n got %q\nwant %q", i, got[i], want[i])

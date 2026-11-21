@@ -22,11 +22,10 @@ func TestRoutesAndWatchSendAFI(t *testing.T) {
 	t.Cleanup(srv.Close) // after the flag reset below: cleanups run last first
 	t.Cleanup(func() {
 		runCLI(t, srv, "routes", "--afi", "")
-		runCLI(t, srv, "watch", "--afi", "", "--posture", "")
 	})
 
 	runCLI(t, srv, "routes", "--afi", "v6")
-	runCLI(t, srv, "watch", "--afi", "ipv4", "--posture", "secured")
+	runWatchOnce(t, srv, "--afi", "ipv4", "--posture", "secured")
 	if len(got) != 2 || got[0].Get("afi") != "ipv6" || got[1].Get("afi") != "ipv4" || got[1].Get("posture") != "secured" {
 		t.Fatalf("queries %v, want afi=ipv6 then afi=ipv4 with posture", got)
 	}

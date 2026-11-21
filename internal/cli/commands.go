@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -618,109 +617,6 @@ var validateCmd = &cobra.Command{
 	},
 }
 
-// ─── watch ───
-
-var watchCmd = &cobra.Command{
-	Use:   "watch",
-	Short: "Stream live validation state changes",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		addr, _ := cmd.Flags().GetString("address")
-		params := url.Values{}
-		// Each filter used to be read here but posture was the only one sent.
-		if v, _ := cmd.Flags().GetString("prefix"); v != "" {
-			params.Set("prefix", v)
-		}
-		if v, _ := cmd.Flags().GetUint32("origin-asn"); v != 0 {
-			params.Set("origin-asn", fmt.Sprintf("%d", v))
-		}
-		if v, _ := cmd.Flags().GetString("peer"); v != "" {
-			params.Set("peer", v)
-		}
-		if v, _ := cmd.Flags().GetString("posture"); v != "" {
-			params.Set("posture", v)
-		}
-		if err := afiParam(cmd, params); err != nil {
-			return err
-		}
-		if v, _ := cmd.Flags().GetString("router"); v != "" {
-			params.Set("router", v)
-		}
-		if v, _ := cmd.Flags().GetString("rib"); v != "" {
-			params.Set("rib", v)
-		}
-
-		u := fmt.Sprintf("http://%s/api/v1/watch", addr)
-		if len(params) > 0 {
-			u += "?" + params.Encode()
-		}
-
-		resp, err := http.Get(u)
-		if err != nil {
-			return fmt.Errorf("connect to daemon: %w\n  is 'raven serve' running?", err)
-		}
-		defer resp.Body.Close()
-
-		fmt.Println("watching for route events... (Ctrl+C to stop)")
-		fmt.Println()
-
-		scanner := bufio.NewScanner(resp.Body)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			data := line[6:]
-
-			var r watchRoute
-			if err := json.Unmarshal([]byte(data), &r); err != nil {
-				continue
-			}
-			fmt.Println(r.line())
-		}
-		return scanner.Err()
-	},
-}
-
-// watchRoute is the part of a watch event's route that raven watch shows.
-type watchRoute struct {
-	Prefix         string   `json:"prefix"`
-	PeerAddr       string   `json:"peer"`
-	PeerType       string   `json:"peer_type"`
-	RIB            string   `json:"rib"`
-	OriginASN      uint32   `json:"origin_asn"`
-	ASPath         []uint32 `json:"as_path"`
-	ROV            string   `json:"rov"`
-	ASPA           string   `json:"aspa"`
-	ASPAFailingHop *struct {
-		CustomerASN uint32 `json:"customer_asn"`
-		ProviderASN uint32 `json:"provider_asn"`
-	} `json:"aspa_failing_hop"`
-	Posture string `json:"posture"`
-}
-
-// line is r as one raven watch line. An ASPA Invalid shows its failing hop
-// as hop(C→P): C's ASPA does not list P.
-func (r watchRoute) line() string {
-	origin := fmt.Sprintf("AS%d", r.OriginASN)
-	if r.OriginASN == 0 {
-		origin = "-"
-	}
-	aspa := "ASPA:" + r.ASPA
-	if h := r.ASPAFailingHop; h != nil {
-		aspa += fmt.Sprintf(" hop(%d→%d)", h.CustomerASN, h.ProviderASN)
-	}
-	via := r.PeerAddr
-	if r.PeerType == "loc-rib" {
-		via = "loc-rib"
-	}
-	rib := ""
-	if r.RIB != "" {
-		rib = " rib:" + r.RIB
-	}
-	return fmt.Sprintf("[%s] %s via %s%s origin:%s AS_PATH:%v rov:%s %s posture:%s",
-		r.Posture, r.Prefix, via, rib, origin, r.ASPath, r.ROV, aspa, r.Posture)
-}
-
 // ─── helpers ───
 
 func apiGet(addr string, path string, params url.Values) (*http.Response, error) {
@@ -768,15 +664,6 @@ func init() {
 	validateCmd.Flags().String("prefix", "", "prefix to validate (required)")
 	validateCmd.Flags().Uint32("origin-asn", 0, "origin ASN to validate (not supported yet)")
 	validateCmd.Flags().String("rtr", "", "RTR cache address for one-shot mode (not supported yet)")
-
-	// watch flags
-	watchCmd.Flags().String("prefix", "", "filter by prefix")
-	watchCmd.Flags().Uint32("origin-asn", 0, "filter by origin ASN")
-	watchCmd.Flags().String("peer", "", "filter by peer")
-	watchCmd.Flags().String("posture", "", "filter by posture")
-	watchCmd.Flags().String("afi", "", afiFlagHelp)
-	watchCmd.Flags().String("router", "", "filter by monitored router: its address or BMP sysName")
-	watchCmd.Flags().String("rib", "", ribFlagHelp)
 }
 
 // afiFlagHelp is the help of routes and watch --afi.
