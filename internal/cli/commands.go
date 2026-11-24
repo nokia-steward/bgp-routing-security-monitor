@@ -391,7 +391,9 @@ var routesCmd = &cobra.Command{
 
 		format, _ := cmd.Flags().GetString("format")
 		if format == "json" {
-			io.Copy(os.Stdout, resp.Body)
+			if _, err := io.Copy(os.Stdout, resp.Body); err != nil {
+				return err
+			}
 			printNextPageHint(resp.Header)
 			return nil
 		}

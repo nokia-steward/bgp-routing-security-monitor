@@ -90,3 +90,31 @@ func TestRoutesRefusesNegativeLimit(t *testing.T) {
 		t.Errorf("--limit -1: err %v, %d requests; want a --limit error and none", err, requests)
 	}
 }
+
+// An answer cut off mid-body fails raven routes --format json instead of
+// ending it with a truncated array.
+func TestRoutesReportsBrokenStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, "[\n  {")
+		w.(http.Flusher).Flush()
+		panic(http.ErrAbortHandler)
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { routesCmd.Flags().Set("format", "table") })
+
+	stdout := os.Stdout
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devNull.Close()
+	os.Stdout = devNull
+	rootCmd.SetArgs([]string{"routes", "--format", "json", "--address", strings.TrimPrefix(srv.URL, "http://")})
+	err = rootCmd.Execute()
+	os.Stdout = stdout
+	rootCmd.SetArgs(nil)
+	if err == nil {
+		t.Error("cut-off answer: no error, want the read error")
+	}
+}
