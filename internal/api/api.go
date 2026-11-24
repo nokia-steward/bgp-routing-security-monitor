@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -342,17 +343,18 @@ func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
 	routes := f.routes(s.table)
 
 	names := map[netip.Addr]string{} // looked up once per router
-	resp := make([]RouteResponse, 0, len(routes))
+	out := newJSONArrayWriter(w)
 	for _, route := range routes {
 		name, ok := names[route.Router]
 		if !ok {
 			name = s.routerName(route.Router)
 			names[route.Router] = name
 		}
-		resp = append(resp, s.routeResponse(route, name))
+		if !out.Add(s.routeResponse(route, name)) {
+			return
+		}
 	}
-
-	writeJSON(w, resp)
+	out.Close() //nolint:errcheck
 }
 
 func (s *Server) handlePeers(w http.ResponseWriter, r *http.Request) {
@@ -595,6 +597,47 @@ func writeJSON(w http.ResponseWriter, v interface{}) {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	enc.Encode(v) //nolint:errcheck
+}
+
+// jsonArrayWriter writes an indented JSON array one element at a time, so
+// that the memory an answer takes does not grow with its length.
+type jsonArrayWriter struct {
+	bw *bufio.Writer
+	n  int
+}
+
+func newJSONArrayWriter(w http.ResponseWriter) *jsonArrayWriter {
+	w.Header().Set("Content-Type", "application/json")
+	// Larger than net/http's own 4 KiB buffer, so that each HTTP chunk
+	// carries tens of routes rather than a few.
+	return &jsonArrayWriter{bw: bufio.NewWriterSize(w, 32<<10)}
+}
+
+// Add writes v as the array's next element. It reports false once the
+// element cannot be written, as when the client has gone.
+func (a *jsonArrayWriter) Add(v any) bool {
+	b, err := json.MarshalIndent(v, "  ", "  ")
+	if err != nil {
+		return false
+	}
+	sep := ",\n  "
+	if a.n == 0 {
+		sep = "[\n  "
+	}
+	a.n++
+	a.bw.WriteString(sep) //nolint:errcheck // bufio.Writer keeps the error for the Write below
+	_, err = a.bw.Write(b)
+	return err == nil
+}
+
+// Close ends the array and flushes it.
+func (a *jsonArrayWriter) Close() error {
+	end := "\n]\n"
+	if a.n == 0 {
+		end = "[]\n"
+	}
+	a.bw.WriteString(end) //nolint:errcheck // bufio.Writer keeps the error for Flush
+	return a.bw.Flush()
 }
 
 func httpError(w http.ResponseWriter, err error, code int) {
