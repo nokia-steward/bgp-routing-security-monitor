@@ -5,6 +5,7 @@ All notable changes to RAVEN are recorded here.
 ## Unreleased
 
 ### Added
+- `raven routes --limit` and `--after`, and the `limit` and `after` query parameters on `/api/v1/routes`, list the routes a page at a time, in prefix order (#89). A page with more routes after it has a `Link` header to the next page, and `raven routes` names the next `--after` on stderr. Pages follow the route key, so a route withdrawn between two requests shifts nothing.
 - Data staleness and returns to earlier data, in `raven rtr monitor` and
   `raven serve`. A cache can sync on time while its data stops changing, or
   can go back to data it served earlier, for example after an anycast
