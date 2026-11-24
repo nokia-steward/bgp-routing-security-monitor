@@ -385,6 +385,9 @@ var routesCmd = &cobra.Command{
 			return err
 		}
 		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return refusedQuery(resp)
+		}
 
 		format, _ := cmd.Flags().GetString("format")
 		if format == "json" {
@@ -469,6 +472,13 @@ func peerRIBHint(addr, peer, rib string) string {
 	}
 	return fmt.Sprintf("no routes from peer %s in %s; it has %s (list them with --rib %s)",
 		peer, strings.Join(want.Names(), ", "), strings.Join(parts, ", "), strings.Join(ribs, ","))
+}
+
+// refusedQuery is the error of a daemon answer other than 200 OK: its
+// status and the start of its body, which says what the daemon refused.
+func refusedQuery(resp *http.Response) error {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	return fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(body)))
 }
 
 // nextPageHint names the --after that lists the page after this one, from

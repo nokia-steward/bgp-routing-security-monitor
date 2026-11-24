@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 )
@@ -39,6 +40,36 @@ func TestNextPageHint(t *testing.T) {
 	h.Set("Link", `</api/v1/routes?after=Y3Vyc29y&limit=2&posture=origin-only>; rel="next"`)
 	if got, want := nextPageHint(h), "more routes: list the next page with --after Y3Vyc29y"; got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// raven routes reports the daemon's own error when it rejects the query,
+// in every format, and prints nothing on stdout.
+func TestRoutesReportsDaemonError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `invalid after "x": want the cursor of a Link header`, http.StatusBadRequest)
+	}))
+	t.Cleanup(srv.Close)
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	for _, format := range []string{"json", "table"} {
+		stdout := os.Stdout
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Stdout = w
+		rootCmd.SetArgs([]string{"routes", "--format", format, "--address", addr})
+		runErr := rootCmd.Execute()
+		os.Stdout = stdout
+		w.Close()
+		out, _ := io.ReadAll(r)
+		rootCmd.SetArgs(nil)
+		if runErr == nil || !strings.Contains(runErr.Error(), `invalid after "x"`) {
+			t.Errorf("--format %s: err %v, want the daemon's error", format, runErr)
+		}
+		if len(out) != 0 {
+			t.Errorf("--format %s: stdout %q, want nothing", format, out)
+		}
 	}
 }
 

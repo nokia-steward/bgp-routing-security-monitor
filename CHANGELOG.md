@@ -404,6 +404,7 @@ All notable changes to RAVEN are recorded here.
   Anomaly counts and z values change accordingly.
 
 ### Fixed
+- `raven routes` did not check the daemon's answer. When the daemon refused a query, for example a bad `--prefix`, the table format failed with `invalid character 'i' looking for beginning of value`, and `--format json` printed the daemon's error on stdout and exited with 0. `raven routes` now exits with the daemon's error, such as `400 Bad Request: invalid after "x": want the cursor of a Link header`.
 - `/api/v1/routes` held its whole answer in memory three times before it sent it: the routes, the JSON and the indented JSON (#89). Asked for one posture of a 537k-route Loc-RIB on an 8 GB VM, `raven serve` went out of memory and its router sent the Loc-RIB again. The answer is now written one route at a time, in the same JSON layout.
 - After an upgrade, `raven rtr monitor` learned each cache's stale threshold
   from scratch (#80). An `--anomaly-snapshot` from before `data_gaps` has no
