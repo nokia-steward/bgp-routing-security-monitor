@@ -5,6 +5,7 @@ All notable changes to RAVEN are recorded here.
 ## Unreleased
 
 ### Added
+- `raven routes --limit` and `--after`, and the `limit` and `after` query parameters on `/api/v1/routes`, list the routes a page at a time, in prefix order (#89). A page with more routes after it has a `Link` header to the next page, and `raven routes` names the next `--after` on stderr. Pages follow the route key, so a route withdrawn between two requests shifts nothing.
 - Data staleness and returns to earlier data, in `raven rtr monitor` and
   `raven serve`. A cache can sync on time while its data stops changing, or
   can go back to data it served earlier, for example after an anycast
@@ -403,6 +404,8 @@ All notable changes to RAVEN are recorded here.
   Anomaly counts and z values change accordingly.
 
 ### Fixed
+- `raven routes --format json` ignored a read error on the answer: when the connection broke mid-answer, it printed a truncated array and exited with 0 (#89). It now exits with the read error.
+- `raven routes` did not check the daemon's answer. When the daemon refused a query, for example a bad `--prefix`, the table format failed with `invalid character 'i' looking for beginning of value`, and `--format json` printed the daemon's error on stdout and exited with 0. `raven routes` now exits with the daemon's error, such as `400 Bad Request: invalid after "x": want the cursor of a Link header`.
 - `/api/v1/routes` held its whole answer in memory three times before it sent it: the routes, the JSON and the indented JSON (#89). Asked for one posture of a 537k-route Loc-RIB on an 8 GB VM, `raven serve` went out of memory and its router sent the Loc-RIB again. The answer is now written one route at a time, in the same JSON layout.
 - After an upgrade, `raven rtr monitor` learned each cache's stale threshold
   from scratch (#80). An `--anomaly-snapshot` from before `data_gaps` has no

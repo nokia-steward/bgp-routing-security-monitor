@@ -335,12 +335,25 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 }
 
 func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
-	f, err := parseRouteFilter(r.URL.Query(), s.routersNamed)
+	q := r.URL.Query()
+	f, err := parseRouteFilter(q, s.routersNamed)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	page, err := parseRoutePage(q)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	routes := f.routes(s.table)
+	if page.paged() {
+		var more bool
+		routes, more = page.cut(routes)
+		if more {
+			w.Header().Set("Link", nextLink(r, routes[len(routes)-1].Key()))
+		}
+	}
 
 	names := map[netip.Addr]string{} // looked up once per router
 	out := newJSONArrayWriter(w)

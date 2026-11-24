@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -368,16 +369,32 @@ var routesCmd = &cobra.Command{
 		if v, _ := cmd.Flags().GetString("rib"); v != "" {
 			params.Set("rib", v)
 		}
+		limit, _ := cmd.Flags().GetInt("limit")
+		if limit < 0 {
+			return fmt.Errorf("--limit %d: want 0 (every route) or more", limit)
+		}
+		if limit > 0 {
+			params.Set("limit", strconv.Itoa(limit))
+		}
+		if v, _ := cmd.Flags().GetString("after"); v != "" {
+			params.Set("after", v)
+		}
 
 		resp, err := apiGet(addr, "/api/v1/routes", params)
 		if err != nil {
 			return err
 		}
 		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return refusedQuery(resp)
+		}
 
 		format, _ := cmd.Flags().GetString("format")
 		if format == "json" {
-			io.Copy(os.Stdout, resp.Body)
+			if _, err := io.Copy(os.Stdout, resp.Body); err != nil {
+				return err
+			}
+			printNextPageHint(resp.Header)
 			return nil
 		}
 
@@ -386,6 +403,7 @@ var routesCmd = &cobra.Command{
 			return err
 		}
 		printRoutes(os.Stdout, routes, format == "wide")
+		printNextPageHint(resp.Header)
 		if peer, _ := cmd.Flags().GetString("peer"); peer != "" && len(routes) == 0 {
 			rib, _ := cmd.Flags().GetString("rib")
 			if hint := peerRIBHint(addr, peer, rib); hint != "" {
@@ -456,6 +474,33 @@ func peerRIBHint(addr, peer, rib string) string {
 	}
 	return fmt.Sprintf("no routes from peer %s in %s; it has %s (list them with --rib %s)",
 		peer, strings.Join(want.Names(), ", "), strings.Join(parts, ", "), strings.Join(ribs, ","))
+}
+
+// refusedQuery is the error of a daemon answer other than 200 OK: its
+// status and the start of its body, which says what the daemon refused.
+func refusedQuery(resp *http.Response) error {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	return fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(body)))
+}
+
+// nextPageHint names the --after that lists the page after this one, from
+// the Link header of an /api/v1/routes answer; "" on the last page.
+func nextPageHint(h http.Header) string {
+	link, ok := strings.CutSuffix(h.Get("Link"), `>; rel="next"`)
+	if !ok || !strings.HasPrefix(link, "<") {
+		return ""
+	}
+	next, err := url.Parse(link[1:])
+	if err != nil || next.Query().Get("after") == "" {
+		return ""
+	}
+	return "more routes: list the next page with --after " + next.Query().Get("after")
+}
+
+func printNextPageHint(h http.Header) {
+	if hint := nextPageHint(h); hint != "" {
+		fmt.Fprintln(os.Stderr, hint)
+	}
 }
 
 // routeRow is the part of an /api/v1/routes route that raven routes shows.
@@ -658,6 +703,8 @@ func init() {
 	routesCmd.Flags().String("afi", "", afiFlagHelp)
 	routesCmd.Flags().String("router", "", "filter by monitored router: its address or BMP sysName")
 	routesCmd.Flags().String("rib", "", ribFlagHelp)
+	routesCmd.Flags().Int("limit", 0, "list at most this many routes, in prefix order; 0 lists them all")
+	routesCmd.Flags().String("after", "", "list the routes after this cursor, which a page with more routes after it names on stderr")
 	routesCmd.Flags().String("format", "table", "output format: table, wide, json")
 
 	// validate flags

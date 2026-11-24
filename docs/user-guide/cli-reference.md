@@ -240,6 +240,7 @@ raven routes --rib adj-rib-out-pre --posture origin-invalid
 raven routes --rib loc-rib
 raven routes --rib pre-policy,post-policy --prefix 203.0.113.0/24
 raven routes --format json
+raven routes --rib loc-rib --posture origin-invalid --limit 10000
 ```
 
 **Flags:**
@@ -254,6 +255,8 @@ raven routes --format json
 | `--posture` | Filter by security posture |
 | `--afi` | Filter by address family: `ipv4` or `ipv6` (`v4` and `v6` also work). Default: both. An IPv4-mapped IPv6 prefix is IPv6 |
 | `--rib` | The RIBs to list, comma-separated: `adj-rib-in-pre` (or `pre-policy`), `adj-rib-in-post` (or `post-policy`), `loc-rib`, `adj-rib-out-pre`, `adj-rib-out-post`. Default: the default view, `adj-rib-in-pre` and `loc-rib` |
+| `--limit` | List at most this many routes, in prefix order. Default: all |
+| `--after` | List the routes after this cursor, the one the previous page names on stderr |
 | `--format` | Output format: `table` (default), `wide` or `json` |
 
 Every filter you give applies, so `--prefix 203.0.113.0/24 --peer
@@ -297,6 +300,8 @@ view. An unknown value returns HTTP 400, for example for `rib=adj-rib-in`:
 ```text
 invalid rib: unknown RIB "adj-rib-in": want adj-rib-in-pre (or pre-policy), adj-rib-in-post (or post-policy), loc-rib, adj-rib-out-pre or adj-rib-out-post
 ```
+
+A large table is best listed a page at a time: `--limit` lists at most that many routes, in prefix order, and when more routes follow, `raven routes` names the `--after` that lists the next page on stderr. Give it with the same filters and `--limit`. The API takes them as the `limit` and `after` query parameters on `/api/v1/routes`. A page with more routes after it has a `Link` header with the next page's URL, the same query with its `after` cursor; the last page has none. Pages follow the route key, not a position, so a route withdrawn or added between two requests does not repeat or skip another one. A walk is not a snapshot: a route added before the cursor is not listed. A cursor is opaque. An invalid `limit` or `after` returns HTTP 400. Without `limit` or `after`, the answer is every route, in no set order.
 
 **Posture values for `--posture`:**
 

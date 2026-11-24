@@ -61,6 +61,8 @@ however many peers sent it, instead of one table per peer. RAVEN shows it
 in the default view, and it also covers the router's own and iBGP-learned
 routes. See [Loc-RIB Monitoring](../user-guide/loc-rib.md).
 
+A route query uses memory and CPU on top of the table. `/api/v1/routes` sends each route as soon as it is encoded, but it still keeps a reference to every route that the filters match, and each page reads every one of them to find the next routes in key order ([#92](https://github.com/nokia-steward/bgp-routing-security-monitor/issues/92) tracks a walk that reads only the next page). List a large set of routes a page at a time with `raven routes --limit` and `--after` (the API's `limit` and `after`, see [raven routes](../user-guide/cli-reference.md#raven-routes)). Narrow the query when you can, for example with `--prefix` and `--match longer`. A larger `--limit` makes fewer passes over the table.
+
 ## Multiple Routers, Single RAVEN Instance
 
 The recommended pattern for most networks is one RAVEN instance receiving BMP from all your routers:
