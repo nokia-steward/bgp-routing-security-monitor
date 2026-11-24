@@ -1359,6 +1359,7 @@ raven rtr
 |---|---|
 | `raven rtr monitor` | Observe one or more RTR cache sessions, log telemetry to NDJSON, detect anomalies, and compare caches |
 | `raven rtr seed-baseline` | Build an anomaly-detector baseline snapshot from recorded telemetry |
+| `raven rtr dump` | Write the VRPs and ASPAs a cache serves as JSON, to compare caches with a plain diff |
 
 These commands are **standalone** — they connect directly to an RTR cache and
 do not require a running `raven serve` daemon or a config file.
@@ -1572,3 +1573,85 @@ give the detector less history to reason about.
     representative period, run `raven rtr seed-baseline` against that file once,
     then start the live monitor with `--anomaly-snapshot` pointed at the seeded
     baseline so it detects from the first sync.
+
+---
+
+## raven rtr dump
+
+Open one RTR session with a cache, wait for the first complete sync (End of
+Data), write the VRPs and ASPAs the cache served, and exit. Use it to find
+which records two caches disagree on: `raven rtr monitor` tells that they
+differ and names a sample of the records, a dump of each lists them all.
+
+```bash
+raven rtr dump --cache rtr1.example.net:3323 > rtr1.json
+raven rtr dump --cache rtr2.example.net:3323 -o rtr2.json
+diff rtr1.json rtr2.json
+```
+
+The output follows the layout of Routinator's `json` output format, one
+record a line, with a metadata block first:
+
+```json
+{
+  "metadata": {
+    "generated": 1795542434,
+    "generatedTime": "2026-11-24T17:47:14Z",
+    "cache": "rtr1.example.net:3323",
+    "sessionID": 60474,
+    "serial": 590,
+    "protocolVersion": 2,
+    "dataFingerprint": "42449f031b182d67cca1a93eac139882",
+    "aspasAvailable": true
+  },
+  "roas": [
+    { "asn": "AS13335", "prefix": "1.0.0.0/24", "maxLength": 24 },
+    ...
+  ],
+  "aspas": [
+    { "customer": "AS43", "providers": ["AS293"] },
+    ...
+  ]
+}
+```
+
+- **Sorted and without duplicates**, so that two dumps compare line by line:
+  VRPs by address family (IPv4 first), address, prefix length, maximum length
+  and AS number; ASPAs by customer AS, each with its providers sorted (AS0
+  included, as the cache sent it).
+- **`dataFingerprint`** is the same value that `raven rtr monitor` writes as
+  `data_fingerprint` in its sync records: a dump can be matched to the sync of
+  the telemetry it was taken at, and two dumps with the same fingerprint hold
+  the same set.
+- **No ASPA below RTR version 2.** When the session runs at version 0 or 1
+  (the cache speaks no higher, or `--rtr-version` pins it), the `aspas` list
+  is left out and the metadata has `"aspasAvailable": false` and
+  `aspasUnavailableReason`. An empty `aspas` list always means a cache that
+  holds no ASPA.
+- **No trust anchor.** RTR does not carry the trust anchor of a record, so
+  the records have no `ta`. To find the trust anchor and the repository of a
+  record, look it up in a validator's `jsonext` export, for example with
+  Routinator:
+
+```bash
+curl -s https://validator.example.net/jsonext \
+  | jq -c '.roas[] | select(.asn == "AS64500" and .prefix == "192.0.2.0/24")
+           | {ta: .source[0].tal, uri: .source[0].uri}'
+```
+
+**Flags:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--cache` | `localhost:3323` | RTR cache address (`host:port`) |
+| `--transport` | `tcp` | RTR transport: `tcp` or `tls` |
+| `--rtr-version` | `auto` | RTR protocol version: `auto` negotiates from 2 down to what the cache speaks; `0`, `1` or `2` pins it |
+| `-o`, `--output` | `-` | File to write the JSON to (`-` for standard output) |
+| `--timeout` | `5m` | Give up when the first sync has not ended by then (`0` waits forever) |
+
+A summary goes to standard error:
+
+```text
+rtr1.example.net:3323: session 60474, serial 590, RTR version 2, 1039199 VRPs, 4308 ASPAs
+```
+
