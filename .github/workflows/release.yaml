@@ -1,0 +1,83 @@
+name: Release
+
+# On every v* tag: builds raven for Linux and macOS, amd64 and arm64, with the
+# Makefile's ldflags (version from the tag), writes SHA256SUMS, and publishes
+# a GitHub Release with the tag's CHANGELOG.md section as its notes. A tag
+# with a "-" (v0.5.0-rc.1) is a pre-release, and takes the section of the
+# release it precedes when it has none of its own. Re-running the workflow
+# for a tag replaces the assets and notes of its release.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: false
+
+      - name: Check the tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: $TAG" >&2
+            exit 1
+          fi
+
+      # Fails before anything is built if CHANGELOG.md has no section for
+      # the tag.
+      - name: Release notes from CHANGELOG.md
+        env:
+          TAG: ${{ github.ref_name }}
+        run: bash .github/scripts/changelog-section.sh "$TAG" CHANGELOG.md > release-notes.md
+
+      # The names match the download URLs in docs/getting-started/install.md.
+      - name: Build
+        env:
+          TAG: ${{ github.ref_name }}
+          CGO_ENABLED: "0"
+        run: |
+          module=$(head -1 go.mod | awk '{print $2}')
+          commit=$(git rev-parse --short HEAD)
+          date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          ldflags="-s -w -X ${module}/internal/buildinfo.Version=${TAG} -X ${module}/internal/buildinfo.Commit=${commit} -X ${module}/internal/buildinfo.Date=${date}"
+          mkdir dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            GOOS=${target%/*} GOARCH=${target#*/} go build -trimpath -ldflags "$ldflags" \
+              -o "dist/raven-${target%/*}-${target#*/}" ./cmd/raven
+          done
+          ./dist/raven-linux-amd64 version | grep -Fx "raven ${TAG}"
+          ./dist/raven-linux-amd64 version | grep -F "commit: ${commit}"
+          (cd dist && sha256sum raven-* > SHA256SUMS && cat SHA256SUMS)
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          prerelease=()
+          if [[ "$TAG" == *-* ]]; then
+            prerelease=(--prerelease)
+          fi
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --title "RAVEN $TAG" --notes-file release-notes.md "${prerelease[@]}"
+          else
+            gh release create "$TAG" dist/* --verify-tag --title "RAVEN $TAG" \
+              --notes-file release-notes.md "${prerelease[@]}"
+          fi
