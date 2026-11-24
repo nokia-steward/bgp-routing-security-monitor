@@ -2,7 +2,116 @@
 
 All notable changes to RAVEN are recorded here.
 
-## Unreleased
+## v0.5.0 (2026-11-24)
+
+### Upgrading
+
+What a v0.4.0 user meets on upgrade. Each item is explained in full in
+the entries below.
+
+Install and build:
+- The Go module path is
+  `github.com/nokia-steward/bgp-routing-security-monitor` (#63, PR #83).
+  Install with
+  `go install github.com/nokia-steward/bgp-routing-security-monitor/cmd/raven@latest`;
+  the old `github.com/nokia/...` path does not get this release. Code that
+  imports RAVEN packages must change its import paths.
+- Release binaries now cover macOS as well as Linux, `amd64` and `arm64`,
+  with `SHA256SUMS` to check a download against (`sha256sum`, or
+  `shasum -a 256` on macOS).
+
+Dashboards and alerts:
+- `raven_routes_total` and `raven_route_table_size` gain a `rib` label, and a
+  query without a `rib` matcher adds RIBs up. Add `rib="adj-rib-in-pre"` for
+  the v0.4.0 values (PR #24). The OTel `raven.routes.total` gains the same
+  attribute.
+- `raven_rtr_vrp_count{cache}` and `raven_rtr_aspa_count{cache}` are each
+  cache's own count, no longer the shared store's total, and a VRP an RTR
+  cache announced twice is counted once (#66, PR #69).
+- `raven_rtr_stale{cache,cache_state}` (new in this release) has two series
+  per cache, `connected` and `disconnected`; 1 on one of them while the data
+  is stale. Alert on `max by (cache) (raven_rtr_stale) == 1` to cover both
+  (PR #71).
+- `raven_bmp_peer_state` goes to 0 for every peer of a BMP session that
+  ends, and the OTel `raven.rtr.session.state` goes to 0 when an RTR
+  session ends (PRs #24, #65).
+
+Route queries, API and CLI output:
+- Route queries without a RIB return the default view, Adj-RIB-In
+  pre-policy and Loc-RIB: `/api/v1/routes`, `/api/v1/watch`, `raven routes`
+  and `raven watch`. Status totals count the default view, `raven audit`
+  audits one RIB (`adj-rib-in-pre` unless `--rib`), and `raven what-if` and
+  `raven aspa recommend` use Adj-RIB-In pre-policy only (PR #24).
+- RIB names are `adj-rib-in-pre`, `adj-rib-in-post`, `loc-rib`,
+  `adj-rib-out-pre`, `adj-rib-out-post`, with `pre-policy` and
+  `post-policy` as aliases. Route snapshots are written with the new names:
+  before rolling back to v0.4.0, delete `routes.snap` (PR #24).
+- A type 2 route distinguisher is written `65000L:1` (PR #24).
+- `rov_reason` names the deciding VRP, and says `prefix length ... exceeds
+  maxLength` for a route Invalid only by length; it used to say `origin ASn
+  not authorized` for every Invalid route (PR #60).
+- `raven what-if --reject-invalid` and `--aspa-enforce` print a
+  `RIBs covered:` line first; scripts that parse the table by line number
+  need updating (PR #69).
+- `raven watch` lines show the ASPA state and failing hop (PR #34).
+- `raven watch` reconnects when its stream ends, instead of exiting, and
+  its `watching for route events...` line is on stderr; stdout carries
+  events only. Scripts that wait for watch to exit when the daemon goes
+  away must add `--once` (#81, PR #88).
+- `/api/v1/routes` streams its answer with chunked transfer encoding, with
+  no `Content-Length`; the JSON is byte for byte the same. A client that
+  sizes a buffer from `Content-Length` must read to the end instead. The
+  new `limit` and `after` parameters page the answer (#89, PRs #90, #91).
+- `raven routes` exits non-zero with the daemon's error when the daemon
+  refuses a query or the answer breaks off. With `--format json` it used
+  to print the error, or a truncated array, on stdout and exit 0 (#89,
+  PR #91).
+- Behind an RTR cache below version 2, ASPA is Unknown (no ASPA data) and
+  postures are `unverified` or `origin-only`, not `path-only` or
+  `secured`; `validation.aspa: false` is honored (PR #24).
+
+Event rules and webhooks:
+- RTR-driven posture changes reach the event engine: webhook, FlowSpec and
+  log rules fire when an RTR update changes a route, not only on BMP.
+  The RTR bulk guard, `events.rtr-bulk-threshold`, default 100, holds back
+  per-route actions of a large update (PR #65).
+- An identical BMP re-announcement no longer emits a `posture_change` event
+  or a watch event (PR #65).
+- A rule's cooldown is kept per route and RIB, so a router sending
+  pre-policy and Loc-RIB can fire one action per RIB (PR #24).
+
+`raven rtr monitor` NDJSON and anomalies:
+- `interval_since_ns` is no longer an anomaly `trigger`, `z_scores` or `raw`
+  key; the detector scores `serial_change_interval_ns`, the time between
+  serial changes. Alerts on `interval_since_ns`, alone or in a correlated
+  trigger, stop firing (#75, PR #85).
+- `error` records with `error_origin` `client` can have `error_code` 0
+  (Corrupt Data), for a Prefix or ASPA PDU RAVEN could not parse, which it
+  used to skip silently (#77, PR #79). Codes 6 and 7 are client faults too
+  (#66, PR #69). Each resyncs, keeping the session.
+- An Error Report code 4 during version negotiation is a `version_downgrade`
+  record, no longer an `error` record and a high structural anomaly (#55,
+  PR #64).
+- Timestamps are in UTC (`...Z`), and `sync` records carry their counts
+  when 0 (PR #67).
+- The detector flags only values above the baseline (PR #48), measures
+  spread against a floor per statistic (#59, PR #64), and scores the sync's
+  net change instead of PDU counts (PR #70). Anomaly counts and z values
+  differ from v0.4.0's.
+- New in this release, data staleness: `stale` records carry `cache_state`
+  (`connected` or `disconnected`), and `stale_resolved` carries `resolution`
+  (`data_change`, `reconnect_new_data`) (PR #71).
+- A cache's stale-data gap history is rebuilt from `--log-file` at startup
+  when the `--anomaly-snapshot` has none. Until 100 gaps are known, a
+  learned threshold is at most the 4-hour default, in `raven serve` too
+  (#80, PR #84).
+
+RTR and process behavior:
+- An End of Data Refresh Interval of 0 is clamped to 1 s, not replaced by
+  3600 s: such a cache is polled every second (PR #46).
+- SIGHUP shuts `raven serve` and `raven rtr monitor` down cleanly, as
+  SIGINT and SIGTERM do, writing their shutdown snapshots and records; it
+  used to kill them at once (#82, PR #84).
 
 ### Added
 - `raven routes --limit` and `--after`, and the `limit` and `after` query parameters on `/api/v1/routes`, list the routes a page at a time, in prefix order (#89). A page with more routes after it has a `Link` header to the next page, and `raven routes` names the next `--after` on stderr. Pages follow the route key, so a route withdrawn between two requests shifts nothing.
@@ -167,6 +276,10 @@ All notable changes to RAVEN are recorded here.
 - `lab/loc-rib/`: a Containerlab lab that checks Loc-RIB monitoring live
   (`lab/loc-rib/run.sh all`, needs root), including a prefix rr1 originates
   itself, Valid under a ROA for its own AS.
+- `contrib/freebsd/`: an rc.d script that runs `raven rtr monitor` on
+  FreeBSD, one profile per cache, each with its own `runas` user, and
+  FreeBSD build notes that set the version (#51, #53). Thanks to Antonio
+  Prado (University of Padova, ASPA Explorer).
 - `proto/raven/v1/raven.proto`: `rib`, `peer_type` and `peer_distinguisher`
   on routes, `peer_type`, `peer_distinguisher` and `table_name` on peers,
   the default view and per-RIB counts in the route table stats, `rib` in
@@ -206,6 +319,13 @@ All notable changes to RAVEN are recorded here.
   query the client sent.
 
 ### Changed
+- Releases ship `raven` for Linux and macOS, `amd64` and `arm64`
+  (`raven-linux-amd64`, `raven-linux-arm64`, `raven-darwin-amd64`,
+  `raven-darwin-arm64`), built with `CGO_ENABLED=0`, with `SHA256SUMS`. A
+  workflow builds them on each `v*` tag and publishes the GitHub Release,
+  with the tag's section of this changelog as its notes, marked as a
+  pre-release for a tag such as `v0.5.0-rc.1`. v0.4.0's Linux binaries were
+  uploaded by hand, and it had no macOS binaries.
 - `raven watch` reconnects when its stream from the daemon ends or fails
   (#81). It used to exit, with no message, when `raven serve` restarted
   or the network dropped. Now:
@@ -401,7 +521,9 @@ All notable changes to RAVEN are recorded here.
   0.1% of ASPAs held) for `aspa_*` (#59). Timer-driven caches, whose MAD is
   near 0, no longer trip on ordinary jitter or churn, and a window whose
   MAD is exactly 0 is no longer skipped: it trips on a large deviation.
-  Anomaly counts and z values change accordingly.
+  Anomaly counts and z values change accordingly. `interval_since_ns` was
+  later replaced by `serial_change_interval_ns`, whose floor is 25% of the
+  median (#75, above).
 
 ### Fixed
 - `raven routes --format json` ignored a read error on the answer: when the connection broke mid-answer, it printed a truncated array and exited with 0 (#89). It now exits with the read error.
@@ -503,7 +625,7 @@ All notable changes to RAVEN are recorded here.
   update changes, not only BMP-driven changes: a VRP edit that makes a route
   ROV Invalid is printed like a hijack received over BMP. A revalidation
   that changes only a route's details (another matching VRP, a reason) is
-  not shown. As for BMP routes, a watcher that falls 100 events behind
+  not shown. As for BMP routes, a watcher that falls 1024 events behind
   misses events rather than holding up ingest.
 - The RTR anomaly detector flags only values above a metric's baseline. It
   used to trip on |z|, so after a baseline seeded at a 15-minute cadence
