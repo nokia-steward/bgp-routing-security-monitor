@@ -135,6 +135,8 @@ time=2026-10-18T09:12:44.047Z level=INFO msg="BMP Loc-RIB registered" subsystem=
 
 `peer_up` is `true` when the instance registered from its Peer Up, and `filtered` reports the Loc-RIB's F flag (RFC 9069 §4.2: the router sends a filtered, not complete, Loc-RIB). The default instance is named `global` whether or not it sent a Peer Up; a VRF instance has no name without one.
 
+A Loc-RIB Peer Up that is sent but wrong is worse than none. GoBGP before v4.8.0 always sends its Loc-RIB routes with ADD-PATH path IDs, but its Loc-RIB Peer Up advertises ADD-PATH only when multipath is enabled, and leaves the Peer BGP ID and Peer AS zero. RAVEN takes ADD-PATH from the Peer Up, so with GoBGP's default configuration it would read those prefixes 4 bytes out of step. GoBGP v4.8.0 fixed this ([osrg/gobgp#3500](https://github.com/osrg/gobgp/pull/3500)): use v4.8.0 or later. RAVEN's lab does not run GoBGP as a monitored router.
+
 A Loc-RIB instance's Peer Down removes its Loc-RIB routes only, and a BGP peer's Peer Down removes that peer's Adj-RIB-In and Adj-RIB-Out routes only. When the BMP session ends, every route it sent is withdrawn and every peer's `raven_bmp_peer_state` goes to 0.
 
 ## Metrics, events and audit

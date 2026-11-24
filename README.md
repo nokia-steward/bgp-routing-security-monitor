@@ -23,9 +23,9 @@ raven routes --posture origin-invalid
 
 ## Container Image
 
-The `Docker image` workflow publishes images on every `v*` tag to GitHub Container Registry and, when the `DOCKERHUB_NAMESPACE` repository variable and the `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` secrets are set, to Docker Hub. No image has been published yet. Release tags are published as the version without the leading `v` (for example `0.4.0`) and move `latest`; pre-release tags only get the version tag. Images support `linux/amd64` and `linux/arm64` and run as UID 10001.
+The `Docker image` workflow publishes images on every `v*` tag to GitHub Container Registry and, when the `DOCKERHUB_NAMESPACE` repository variable and the `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` secrets are set, to Docker Hub. No image has been published yet. Release tags are published as the version without the leading `v` (for example `0.5.0`) and move `latest`; pre-release tags only get the version tag. Images support `linux/amd64` and `linux/arm64` and run as UID 10001.
 
-An existing tag is rebuilt by running the `Docker image` workflow on the `Actions` tab with the `tag` input set to it, for example `v0.4.0`. A tag published before the `Dockerfile` existed borrows it from the branch the workflow is run on.
+An existing tag is rebuilt by running the `Docker image` workflow on the `Actions` tab with the `tag` input set to it, for example `v0.5.0`. A tag published before the `Dockerfile` existed borrows it from the branch the workflow is run on.
 
 Until an image is published, build it from a checkout. The entrypoint is `raven`, so pass normal subcommands:
 

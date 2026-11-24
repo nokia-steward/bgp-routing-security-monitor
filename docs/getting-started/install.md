@@ -181,7 +181,7 @@ raven version
 Expected output:
 
 ```text
-raven v0.4.0
-  commit: 7ba429a
-  built:  2026-10-19T13:56:47Z
+raven v0.5.0
+  commit: 3b69320
+  built:  2026-11-21T12:00:00Z
 ```
