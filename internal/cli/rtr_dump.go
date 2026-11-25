@@ -2,10 +2,12 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -23,13 +25,56 @@ type rtrSnapshot struct {
 	aspas []types.ASPARecord
 }
 
+// progressEvery is how often dump says on stderr how many records the
+// session has received, while it waits for the first End of Data.
+var progressEvery = 10 * time.Second
+
 // takeRTRSnapshot opens a session with client's cache and returns the
 // records it held at the first End of Data, read on the client's goroutine
 // so that they, the serial and the fingerprint belong to the same sync.
+//
+// A cache that cannot be reached at all (the first dial fails) ends it at
+// once with the dial's error; once a session has connected, one that drops
+// before the End of Data is tried again until ctx ends. progress, if not
+// nil, gets a line when the cache answers and then every progressEvery
+// with the records received so far, so that a slow transfer can be told
+// from a hang.
 func takeRTRSnapshot(ctx context.Context, client *rtr.Client, cache string, vrps *store.VRPStore,
-	aspas *store.ASPAStore, now func() time.Time) (*rtrSnapshot, error) {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	aspas *store.ASPAStore, now func() time.Time, progress io.Writer) (*rtrSnapshot, error) {
+	ctx, cancel := context.WithCancelCause(ctx)
+
+	connected := false // owned by the goroutine running Start
+	client.SetOnSessionEnd(func(err error, dialed bool) {
+		if dialed {
+			connected = true
+			return
+		}
+		if !connected {
+			cancel(&unreachableError{cache: cache, err: err})
+		}
+	})
+	var wg sync.WaitGroup
+	defer func() { cancel(nil); wg.Wait() }() // no progress line once this returns
+	if progress != nil {
+		progress = &lockedWriter{w: progress}
+		client.SetOnEstablished(func(version uint8) {
+			fmt.Fprintf(progress, "%s: session open at RTR version %d, waiting for the first End of Data\n", cache, version)
+		})
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			t := time.NewTicker(progressEvery)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					fmt.Fprintf(progress, "%s: %d records received so far\n", cache, client.RecordsReceived())
+				}
+			}
+		}()
+	}
 
 	got := make(chan *rtrSnapshot, 1)
 	client.SetOnSync(func() {
@@ -49,7 +94,7 @@ func takeRTRSnapshot(ctx context.Context, client *rtr.Client, cache string, vrps
 		}
 		select {
 		case got <- snap:
-			cancel() // one sync is all this command needs
+			cancel(nil) // one sync is all this command needs
 		default:
 		}
 	})
@@ -71,9 +116,35 @@ func takeRTRSnapshot(ctx context.Context, client *rtr.Client, cache string, vrps
 			return snap, nil
 		default:
 		}
-		return nil, fmt.Errorf("no complete sync from %s: %w", cache, context.Cause(ctx))
+		cause := context.Cause(ctx)
+		if reach := (*unreachableError)(nil); errors.As(cause, &reach) {
+			return nil, cause
+		}
+		return nil, fmt.Errorf("no complete sync from %s: %w", cache, cause)
 	}
 }
+
+// lockedWriter serialises the progress lines, written from the goroutine
+// running Start and from the ticker.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
+}
+
+// unreachableError is a cache that the first dial could not connect to.
+type unreachableError struct {
+	cache string
+	err   error
+}
+
+func (e *unreachableError) Error() string { return fmt.Sprintf("cannot reach %s: %v", e.cache, e.err) }
+func (e *unreachableError) Unwrap() error { return e.err }
 
 func newRTRDumpCmd() *cobra.Command {
 	var (
@@ -128,12 +199,12 @@ empty list always means a cache that holds none.`,
 					fmt.Errorf("timed out after %s", timeout))
 				defer cancel()
 			}
-			snap, err := takeRTRSnapshot(ctx, client, cache, vrps, aspas, time.Now)
+			snap, err := takeRTRSnapshot(ctx, client, cache, vrps, aspas, time.Now, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
 
-			snap.vrps, snap.aspas = dump.SortVRPs(snap.vrps), dump.SortASPAs(snap.aspas)
+			// dump.Write sorts and deduplicates: the records go to it as the stores hold them
 			if err := writeRTRDump(cmd.OutOrStdout(), output, snap); err != nil {
 				return err
 			}

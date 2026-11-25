@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -133,5 +134,53 @@ func TestRTRDumpTimeout(t *testing.T) {
 func TestRTRDumpBadTransport(t *testing.T) {
 	if _, _, err := runDump(t, "--transport", "udp"); err == nil {
 		t.Fatal("want an error for --transport udp")
+	}
+}
+
+// A cache that refuses the connection ends the dump at once with the dial's
+// error, not after --timeout with a timeout.
+func TestRTRDumpUnreachable(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	l.Close() // nothing listens there now: connection refused
+
+	start := time.Now()
+	_, _, err = runDump(t, "--cache", addr, "--timeout", "20s")
+	if err == nil || !strings.Contains(err.Error(), "cannot reach "+addr) || strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("want the dial error, got %v", err)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("took %s: it waited for the timeout", d)
+	}
+}
+
+// While the first sync is under way the dump says that the session is open
+// and, every progressEvery, how many records it has received.
+func TestRTRDumpProgress(t *testing.T) {
+	old := progressEvery
+	progressEvery = 50 * time.Millisecond
+	t.Cleanup(func() { progressEvery = old })
+
+	cache := rtrtest.NewCache(t)
+	go func() {
+		q := cache.Next(5 * time.Second)
+		q.Conn.Send(
+			rtrtest.CacheResponse(2, 9),
+			rtrtest.IPv4Prefix(2, true, netip.MustParsePrefix("192.0.2.0/24"), 24, 64500),
+			rtrtest.ASPA(true, 64511, 174),
+		)
+		time.Sleep(300 * time.Millisecond) // a slow transfer
+		q.Conn.Send(rtrtest.EndOfData(2, 9, 1, 3600, 600, 7200))
+	}()
+
+	_, errOut, err := runDump(t, "--cache", cache.Addr(), "--timeout", "10s")
+	if err != nil {
+		t.Fatalf("dump: %v\n%s", err, errOut)
+	}
+	if !strings.Contains(errOut, "session open at RTR version 2") || !strings.Contains(errOut, "2 records received so far") {
+		t.Fatalf("progress: %q", errOut)
 	}
 }
