@@ -172,7 +172,7 @@ bash lab/demo-master.sh recommend     # Run ASPA recommender
 Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 - Username: `admin`
-- Password: `admin`
+- Password: `raven123`
 
 The Security Posture Overview dashboard updates in real time as you run
 the attack scenarios.

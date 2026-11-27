@@ -676,17 +676,17 @@ verdict as a rate over time, so you can see when it started.
 
 ### Running Grafana with Docker
 
-For the demo lab or a quick local setup:
+For a quick local setup outside the demo lab (`lab/demo-master.sh setup` already starts Grafana for you):
 
 ```bash
 docker run -d \
   --name grafana \
   -p 3000:3000 \
-  -e GF_SECURITY_ADMIN_PASSWORD=admin \
+  -e GF_SECURITY_ADMIN_PASSWORD=raven123 \
   grafana/grafana:latest
 ```
 
-Then import the dashboard as described above and point the Prometheus
+Log in as `admin` / `raven123` (change it if Grafana is reachable from anything other than your machine), then import the dashboard as described above and point the Prometheus
 datasource at your RAVEN metrics endpoint.
 
 ## Memory Profiling (pprof)
