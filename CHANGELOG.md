@@ -7,6 +7,25 @@ All notable changes to RAVEN are recorded here.
 ### Added
 - `raven rtr dump` writes the VRPs and ASPAs that an RTR cache serves at its first complete sync as JSON, in the layout of Routinator's `json` output, sorted and without duplicates, so that two caches compare with a plain diff. The metadata has the cache, the session ID, the serial, the RTR version, the time and the `data_fingerprint` of the monitor's telemetry; below RTR version 2 the `aspas` list is left out and the metadata says that ASPAs were unavailable.
 
+### Changed
+- The docs give the ASPA setup for both Routinator versions: 0.16 and
+  later serve ASPA by default (`--disable-aspa` or `enable-aspa = false`
+  turns it off), and 0.15.x and older need `--enable-aspa` or
+  `enable-aspa = true`. The examples now put `--enable-aspa` before
+  `server`, where Routinator accepts it.
+- The install guide shows how to pull the published multi-arch image
+  (`linux/amd64`, `linux/arm64`) from
+  `ghcr.io/nokia-steward/bgp-routing-security-monitor`, with building from a
+  checkout as the alternative.
+
+### Fixed
+- `lab/demo-master.sh` could not start Routinator 0.16 or later. It passed
+  `--enable-aspa`, which Routinator 0.16 replaced with `--disable-aspa` when
+  it turned ASPA on by default, and now rejects as an unknown option. The
+  script now reads `routinator --version` and passes `--enable-aspa` only
+  to Routinator 0.15.x and older. If it cannot read the version, it starts
+  Routinator without the flag and warns.
+
 ## v0.5.0 (2026-11-24)
 
 ### Upgrading

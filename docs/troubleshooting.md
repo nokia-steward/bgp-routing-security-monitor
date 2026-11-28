@@ -263,7 +263,10 @@ RAVEN logs `ASPA verification on: an RTR cache synced at protocol version
 
 **Cause:** One of:
 
-1. Routinator is not started with `--enable-aspa`
+1. Routinator is not serving ASPA. On Routinator 0.15.x and older, it was
+   started without `--enable-aspa` (or `enable-aspa = true` in the config
+   file). On 0.16 and later, it was started with `--disable-aspa`, or the
+   config file sets `enable-aspa = false`.
 2. RAVEN negotiated RTR v1 instead of v2
 3. Routinator version does not support ASPA
 4. `validation.aspa` is `false`
@@ -274,11 +277,20 @@ RAVEN logs `ASPA verification on: an RTR cache synced at protocol version
 curl -s http://127.0.0.1:8323/api/v1/status | grep -i aspa
 ```
 
-If no ASPA fields appear, restart Routinator with ASPA enabled:
+If no ASPA fields appear, check the version with `routinator --version`
+and restart Routinator with ASPA on. On Routinator 0.16 and later, drop
+`--disable-aspa` and any `enable-aspa = false` line from the config file:
 
 ```bash
 pkill routinator
-routinator server --enable-aspa &
+routinator server &
+```
+
+On Routinator 0.15.x and older, add `--enable-aspa` before `server`:
+
+```bash
+pkill routinator
+routinator --enable-aspa server &
 ```
 
 **Check 2 — RTR version negotiation:**
@@ -291,8 +303,8 @@ If the value is `1`, RAVEN is speaking RTR v1 to that cache, which carries
 no ASPA data. This happens when Routinator was not ready with RTR v2 when
 RAVEN first connected.
 
-**Fix:** Restart RAVEN after Routinator is fully synced and running with
-`--enable-aspa`. RAVEN will renegotiate RTR v2 on reconnect.
+**Fix:** Restart RAVEN after Routinator is fully synced and serving ASPA
+(Check 1). RAVEN will renegotiate RTR v2 on reconnect.
 
 !!! note
     When a cache makes RAVEN downgrade (RTR Error Report code 4), RAVEN

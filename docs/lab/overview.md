@@ -71,6 +71,10 @@ disable-rsync = true
 enable-aspa = true
 ```
 
+Routinator 0.16 and later serve ASPA by default and accept `enable-aspa =
+true` as a no-change setting; Routinator 0.15.x and older need the line to
+serve ASPA.
+
 Then start the container:
 
 ```bash
@@ -98,6 +102,7 @@ repository-dir = "/home/YOUR_USER/.rpki-cache/repository"
 rtr-listen = ["127.0.0.1:3323"]
 http-listen = ["127.0.0.1:8323"]
 disable-rsync = true
+enable-aspa = true
 CONF
 
 # Start Routinator (first run takes ~4 minutes to sync)

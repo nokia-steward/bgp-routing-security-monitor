@@ -62,9 +62,30 @@ The `go build` command above works on any platform Go supports. The Makefile (`m
 
 ## Docker
 
-Prebuilt images will be published from release tags. Until then, you build the image from a checkout.
+Each release tag, from v0.5.0 on, publishes a multi-arch image
+(`linux/amd64`, `linux/arm64`) to the GitHub Container Registry. You can
+pull that image, or build one from a checkout.
+
+### Pull the Published Image
+
+Image tags are the release version without the leading `v`. `latest` is the
+newest release:
+
+```bash
+docker pull ghcr.io/nokia-steward/bgp-routing-security-monitor:0.5.0
+docker tag ghcr.io/nokia-steward/bgp-routing-security-monitor:0.5.0 raven
+```
+
+The `docker tag` line names the image `raven`, so the commands below work
+unchanged. Check the image:
+
+```bash
+docker run --rm raven version
+```
 
 ### Build the Image
+
+To build the image yourself instead:
 
 ```bash
 git clone https://github.com/nokia-steward/bgp-routing-security-monitor.git
@@ -153,7 +174,7 @@ docker run --detach --name raven \
 |---|---|
 | **Routers** | Any BMP-capable router — SR Linux, SR OS, Junos, IOS-XR, Arista EOS, FRR |
 | **RPKI Validator** | Any RTR-speaking validator — Routinator, rpki-client, FORT |
-| **ASPA** | Routinator with `--enable-aspa` for RTR v2 + ASPA PDU support |
+| **ASPA** | Routinator 0.16 or later (ASPA on by default), or Routinator 0.15.x and older started with `--enable-aspa`, for RTR v2 + ASPA PDU support |
 | **Ports** | BMP listener: `11019/tcp`, API: `11020/tcp`, Prometheus: `9595/tcp` |
 
 ## RPKI Validator Setup
@@ -161,11 +182,28 @@ docker run --detach --name raven \
 RAVEN consumes VRP and ASPA data from your existing RPKI validator via RTR.
 It does not replace your validator — it connects to it.
 
-For ASPA support, you need **Routinator** with RTR v2 enabled:
+For ASPA support, you need **Routinator** serving ASPA over RTR v2. How you
+turn ASPA on depends on the Routinator version (`routinator --version`).
+
+Routinator 0.16 and later process ASPA by default, so you set nothing:
 
 ```bash
-routinator server --enable-aspa --rtr 127.0.0.1:3323
+routinator server --rtr 127.0.0.1:3323
 ```
+
+`--disable-aspa`, or `enable-aspa = false` in the config file, turns ASPA
+off. Do not use either for RAVEN.
+
+Routinator 0.15.x and older need `--enable-aspa` before the `server`
+command, or `enable-aspa = true` in the config file:
+
+```bash
+routinator --enable-aspa server --rtr 127.0.0.1:3323
+```
+
+Routinator 0.16 rejects `--enable-aspa` as an unknown option. It still
+accepts `enable-aspa = true` in the config file, so a config file with that
+line works with both versions.
 
 !!! note
     Routinator takes approximately 4 minutes for a cold start while it syncs
