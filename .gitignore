@@ -26,9 +26,6 @@ lab/loc-rib/bin/
 raven-phase2b-install.sh
 
 # Customer-specific demo materials (not for public repo)
-lab/orange-demo.sh
-lab/orange-raven.yaml
-lab/orange-presenter-notes.md
 slides/
 raven.local.yaml
 lab/aspa-objects.csv
