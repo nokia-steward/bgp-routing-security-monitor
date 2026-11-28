@@ -2,6 +2,11 @@
 
 All notable changes to RAVEN are recorded here.
 
+## Unreleased
+
+### Added
+- `raven rtr dump` writes the VRPs and ASPAs that an RTR cache serves at its first complete sync as JSON, in the layout of Routinator's `json` output, sorted and without duplicates, so that two caches compare with a plain diff. The metadata has the cache, the session ID, the serial, the RTR version, the time and the `data_fingerprint` of the monitor's telemetry; below RTR version 2 the `aspas` list is left out and the metadata says that ASPAs were unavailable.
+
 ## v0.5.0 (2026-11-24)
 
 ### Upgrading

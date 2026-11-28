@@ -13,6 +13,7 @@ func newRTRCmd() *cobra.Command {
 
 	cmd.AddCommand(newRTRMonitorCmd())
 	cmd.AddCommand(newRTRSeedBaselineCmd())
+	cmd.AddCommand(newRTRDumpCmd())
 
 	return cmd
 }

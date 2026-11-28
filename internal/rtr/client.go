@@ -143,9 +143,14 @@ type Client struct {
 	onSync         func()
 	onSyncEvent    func(telemetry.SessionEvent)
 	onDisconnect   func(telemetry.DisconnectReason)
-	lastSerial     atomic.Uint32 // serial, for Serial
-	readyOnce      sync.Once
-	ready          chan struct{}
+	onEstablished  func(version uint8)
+	onSessionEnd   func(err error, connected bool)
+	// received counts the prefix and ASPA PDUs of the current session, for
+	// RecordsReceived.
+	received   atomic.Uint64
+	lastSerial atomic.Uint32 // serial, for Serial
+	readyOnce  sync.Once
+	ready      chan struct{}
 
 	// negotiatedVersion is the version the next session opens at. It
 	// starts at configVersion and is lowered only when the cache rejects a
@@ -389,6 +394,28 @@ func (c *Client) SetOnDisconnect(fn func(telemetry.DisconnectReason)) {
 	c.onDisconnect = fn
 }
 
+// SetOnEstablished sets a callback invoked when the cache first answers in
+// a session, with the RTR version the session runs at. It runs on the
+// goroutine running Start and must not block. Call before Start.
+func (c *Client) SetOnEstablished(fn func(version uint8)) {
+	c.onEstablished = fn
+}
+
+// SetOnSessionEnd sets a callback invoked each time a session ends while
+// Start is still running, with the error that ended it and whether it had
+// connected at all (false: the dial itself failed, as with a refused
+// connection or a name that does not resolve). It runs on the goroutine
+// running Start, before the reconnect backoff, and must not block. Call
+// before Start.
+func (c *Client) SetOnSessionEnd(fn func(err error, connected bool)) {
+	c.onSessionEnd = fn
+}
+
+// RecordsReceived returns how many prefix and ASPA PDUs the current session
+// has received so far (announcements and withdrawals). Safe from any
+// goroutine.
+func (c *Client) RecordsReceived() uint64 { return c.received.Load() }
+
 // Serial returns the cache's serial as of the last End of Data: from the
 // update and sync callbacks, the serial of the sync that called them. Safe
 // from any goroutine.
@@ -474,6 +501,12 @@ func (c *Client) Start(ctx context.Context) {
 		}
 		if c.sessionSynced {
 			retryDelay = c.retryMin
+		}
+		if c.onSessionEnd != nil {
+			c.onSessionEnd(err, c.sessionDialed)
+		}
+		if ctx.Err() != nil { // the callback can end the run
+			return
 		}
 		retryNow := c.negotiateAfterSession(err)
 
@@ -722,6 +755,7 @@ func (c *Client) runSession(ctx context.Context) (err error) {
 		return err
 	}
 	c.sessionDialed = true
+	c.received.Store(0)
 	defer conn.Close()
 	defer func() { c.recordDisconnect(ctx, err) }()
 	if c.connHook != nil {
@@ -1027,6 +1061,10 @@ func (c *Client) runSession(ctx context.Context) (err error) {
 		default:
 			c.log.Debug("unknown RTR PDU type", "type", pduType)
 		}
+		switch pduType {
+		case PDUIPv4Prefix, PDUIPv6Prefix, PDUASPA:
+			c.received.Add(1)
+		}
 		if c.pduHook != nil {
 			c.pduHook(pduType)
 		}
@@ -1053,6 +1091,9 @@ func (c *Client) sessionEstablished(version uint8) {
 		metrics.RTRASPACount.WithLabelValues(c.address).Set(0)
 		c.log.Warn("RTR session below protocol version 2: ASPA validation is unavailable",
 			"protocol_version", c.protoVersion)
+	}
+	if c.onEstablished != nil {
+		c.onEstablished(c.protoVersion)
 	}
 }
 
