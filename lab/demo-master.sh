@@ -65,6 +65,22 @@ ok()      { echo -e "${GREEN}✓ $1${RESET}"; }
 warn()    { echo -e "${YELLOW}⚠ $1${RESET}"; }
 alert()   { echo -e "${RED}🚨 $1${RESET}"; }
 
+# Print the flag that makes the installed Routinator serve ASPA over RTR v2:
+# "--enable-aspa" before 0.16, nothing from 0.16 on (ASPA is on by default
+# there, and 0.16 rejects --enable-aspa as an unknown option). Prints nothing,
+# with a warning on stderr, if `routinator --version` cannot be parsed.
+routinator_aspa_flag() {
+  local out
+  out=$(routinator --version 2>/dev/null) || true
+  if [[ "$out" =~ ([0-9]+)\.([0-9]+)\.[0-9]+ ]]; then
+    if (( 10#${BASH_REMATCH[1]} == 0 && 10#${BASH_REMATCH[2]} < 16 )); then
+      echo "--enable-aspa"
+    fi
+  else
+    warn "Cannot read the Routinator version from '${out}'; starting it without --enable-aspa" >&2
+  fi
+}
+
 # Poll until FRR inside a container is accepting vtysh commands, or timeout.
 wait_for_frr() {
   local container=$1
@@ -112,7 +128,8 @@ setup)
 
   if ! curl -s http://localhost:8323/api/v1/status | grep -q vrps; then
     warn "Routinator is not ready. Routes will not be annotated until sync completes."
-    warn "Start with: routinator -c ~/.routinator.conf --enable-aspa server --rtr 127.0.0.1:3323 --http 127.0.0.1:8323 &"
+    aspa_flag=$(routinator_aspa_flag)
+    warn "Start with: routinator -c ~/.routinator.conf ${aspa_flag:+$aspa_flag }server --rtr 127.0.0.1:3323 --http 127.0.0.1:8323 &"
     warn "Cold start takes ~4 minutes. Warm start (if cache exists) takes ~13 seconds."
   fi
 
@@ -177,11 +194,12 @@ VTYSH" > /dev/null 2>&1 || true
   step "Starting Routinator..."
   pkill -x routinator 2>/dev/null || true
   sleep 1
-  # --enable-aspa is required for Routinator to fetch and serve ASPA objects
-  # over RTR v2. Without it, AS64496's ASPA record (provider: AS3333) is
-  # silently dropped and the route-leak scenario shows ASPA:Unknown instead
-  # of ASPA:Invalid.
-  routinator -c ~/.routinator.conf --enable-aspa server --rtr 127.0.0.1:3323 --http 127.0.0.1:8323 > /tmp/routinator.log 2>&1 &
+  # Routinator 0.15.x and older need --enable-aspa to fetch and serve ASPA
+  # objects over RTR v2; 0.16 and later serve them by default and reject the
+  # flag, so routinator_aspa_flag picks it by version. Without ASPA, AS64496's
+  # ASPA record (provider: AS3333) is silently dropped and the route-leak
+  # scenario shows ASPA:Unknown instead of ASPA:Invalid.
+  routinator -c ~/.routinator.conf $(routinator_aspa_flag) server --rtr 127.0.0.1:3323 --http 127.0.0.1:8323 > /tmp/routinator.log 2>&1 &
   # Routinator's /api/v1/status RTR serial fields stay null until a client
   # connects, so they aren't a reliable readiness signal. Instead, poll the
   # validity endpoint — it returns a "state" key once Routinator has finished
@@ -1017,7 +1035,7 @@ rtr-fail)
   echo ""
 
   alert "Restoring Routinator..."
-  routinator -c ~/.routinator.conf --enable-aspa server --rtr 127.0.0.1:3323 --http 127.0.0.1:8323 >> /tmp/routinator.log 2>&1 &
+  routinator -c ~/.routinator.conf $(routinator_aspa_flag) server --rtr 127.0.0.1:3323 --http 127.0.0.1:8323 >> /tmp/routinator.log 2>&1 &
   sleep 15
 
   step "RAVEN RTR status after restore..."
@@ -1176,7 +1194,7 @@ VTYSH" > /dev/null 2>&1 || true
   done
   echo ""
   alert "Restoring Routinator..."
-  routinator -c ~/.routinator.conf --enable-aspa server --rtr 127.0.0.1:3323 --http 127.0.0.1:8323 >> /tmp/routinator.log 2>&1 &
+  routinator -c ~/.routinator.conf $(routinator_aspa_flag) server --rtr 127.0.0.1:3323 --http 127.0.0.1:8323 >> /tmp/routinator.log 2>&1 &
   sleep 5
   step "RAVEN RTR status after restore..."
   $RAVEN_BIN --address $RAVEN_ADDR status
