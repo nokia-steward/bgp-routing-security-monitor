@@ -140,6 +140,8 @@ type Server struct {
 
 	queries chan Query // copy of every query, for NextQuery
 
+	loopDone chan struct{} // closed when loop has returned
+
 	mu       sync.Mutex
 	serial   uint32
 	vrps     map[VRP]bool
@@ -159,8 +161,13 @@ type sessionConn struct {
 	version uint8
 }
 
-// NewServer starts a fake cache with an empty data set at serial 0. It is
-// closed when the test ends.
+// NewServer starts a fake cache with an empty data set at serial 0, and a
+// goroutine that answers its queries. When the test ends, the Server stops
+// before any cleanup registered earlier runs and before the test completes:
+// its listener and connections are closed, and the answering goroutine and
+// the Cache's have returned, so none of them logs to a finished test.
+// Cleanups the test registers after NewServer run first, with the Server
+// still answering.
 func NewServer(t testing.TB, cfg ServerConfig) *Server {
 	t.Helper()
 	if cfg.MaxVersion > 2 {
@@ -170,16 +177,29 @@ func NewServer(t testing.TB, cfg ServerConfig) *Server {
 		cfg.Unsupported = ReportError(CodeUnsupportedVersion)
 	}
 	s := &Server{
-		Cache:   NewCache(t),
-		t:       t,
-		cfg:     cfg,
-		queries: make(chan Query, 4096),
-		vrps:    map[VRP]bool{},
-		aspas:   map[uint32][]uint32{},
-		history: map[uint32]step{},
+		Cache:    NewCache(t),
+		t:        t,
+		cfg:      cfg,
+		queries:  make(chan Query, 4096),
+		vrps:     map[VRP]bool{},
+		aspas:    map[uint32][]uint32{},
+		history:  map[uint32]step{},
+		loopDone: make(chan struct{}),
 	}
-	go s.loop()
+	go func() {
+		defer close(s.loopDone)
+		s.loop()
+	}()
+	// Registered after NewCache's, so it runs first (cleanups are LIFO).
+	t.Cleanup(s.stopServer)
 	return s
+}
+
+// stopServer stops the Cache, which closes done (loop's stop signal) and the
+// connections, unblocking a Send in progress, then waits for loop to return.
+func (s *Server) stopServer() {
+	s.stop()
+	<-s.loopDone
 }
 
 // SetData replaces the data set without a serial change, for use before
@@ -401,8 +421,16 @@ func (s *Server) NoQuery(d time.Duration, why string) {
 	}
 }
 
+// loop answers queries until done is closed. It runs on its own goroutine,
+// so it must not call t.Fatal*: nothing on its path does, and Conn.Send only
+// logs.
 func (s *Server) loop() {
 	for {
+		select {
+		case <-s.done: // stopping wins over a query ready at the same time
+			return
+		default:
+		}
 		select {
 		case q := <-s.Queries:
 			s.handle(q)

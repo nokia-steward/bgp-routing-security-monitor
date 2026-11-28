@@ -56,14 +56,23 @@ func (c *Conn) Send(pdus ...[]byte) {
 	defer c.mu.Unlock()
 	for _, p := range pdus {
 		if _, err := c.nc.Write(p); err != nil {
-			select {
-			case <-c.done: // the test is over; logging now would panic
-			default:
-				c.t.Logf("rtrtest: send: %v", err)
-			}
+			c.logf("rtrtest: send: %v", err)
 			return
 		}
 	}
+}
+
+// logf logs to the test unless the cache is shutting down, when a failed
+// write is expected (the cache closed the connection) and the test may be
+// finishing. This only drops noise: what keeps a Server's goroutine from
+// logging after the test has completed is that its cleanup waits for it.
+func (c *Conn) logf(format string, args ...any) {
+	select {
+	case <-c.done:
+		return
+	default:
+	}
+	c.t.Logf(format, args...)
 }
 
 // Close closes the connection from the cache's side cleanly (a FIN): the
@@ -88,13 +97,19 @@ type Cache struct {
 	t       testing.TB
 	ln      net.Listener
 	Queries chan Query
-	done    chan struct{} // closed when the test ends
+	done    chan struct{} // closed when the cache stops: the stop signal
 
-	mu    sync.Mutex
-	conns []net.Conn
+	stopOnce sync.Once
+	wg       sync.WaitGroup // accept and every read
+
+	mu     sync.Mutex
+	conns  []net.Conn
+	closed bool // set by stop; accept closes any connection it then gets
 }
 
-// NewCache starts a fake cache; it is closed when the test ends.
+// NewCache starts a fake cache. When the test ends it stops: its listener
+// and connections are closed and its goroutines have returned before the
+// test completes.
 func NewCache(t testing.TB) *Cache {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -102,17 +117,30 @@ func NewCache(t testing.TB) *Cache {
 		t.Fatalf("rtrtest: listen: %v", err)
 	}
 	c := &Cache{t: t, ln: ln, Queries: make(chan Query, 64), done: make(chan struct{})}
-	go c.accept()
-	t.Cleanup(func() {
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		c.accept()
+	}()
+	t.Cleanup(c.stop)
+	return c
+}
+
+// stop signals the cache's goroutines to stop, closes the listener and every
+// connection to unblock their Accept, Read and Write calls, and waits for
+// them to return. It may be called more than once.
+func (c *Cache) stop() {
+	c.stopOnce.Do(func() {
 		close(c.done)
-		ln.Close()
+		c.ln.Close()
 		c.mu.Lock()
-		defer c.mu.Unlock()
+		c.closed = true
 		for _, nc := range c.conns {
 			nc.Close()
 		}
+		c.mu.Unlock()
 	})
-	return c
+	c.wg.Wait()
 }
 
 // Addr is the address to point a client at.
@@ -125,9 +153,18 @@ func (c *Cache) accept() {
 			return
 		}
 		c.mu.Lock()
+		if c.closed { // accepted just before stop closed the listener
+			c.mu.Unlock()
+			nc.Close()
+			return
+		}
 		c.conns = append(c.conns, nc)
+		c.wg.Add(1)
 		c.mu.Unlock()
-		go c.read(&Conn{t: c.t, nc: nc, done: c.done})
+		go func() {
+			defer c.wg.Done()
+			c.read(&Conn{t: c.t, nc: nc, done: c.done})
+		}()
 	}
 }
 
